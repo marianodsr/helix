@@ -19,6 +19,8 @@ use crate::bridge::convert::{
 };
 use crate::bridge::dispatch::{on_editor, CAPABILITIES};
 use crate::bridge::events::{mode_name, DocMeta};
+use crate::bridge::methods::command;
+use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{
     parse_params, DocumentInfo, ErrorCode, FocusedInfo, HelloParams, HelloResult, OpenParams,
     OpenResult, Position, RpcError, RpcResult, SelectionResult, Severity, Split, StateResult,
@@ -44,7 +46,7 @@ pub fn view_from_num(n: u64) -> helix_view::ViewId {
 
 fn command_policy(editor: &Editor) -> &'static str {
     use helix_view::editor::BridgeCommandPolicy as P;
-    match editor.config().bridge.commands {
+    match command::policy(editor) {
         P::Safe => "safe",
         P::All => "all",
         P::None => "none",
@@ -153,14 +155,7 @@ pub fn state(_cx: Ctx, _params: Value) -> BoxFuture<'static, RpcResult> {
 pub fn open(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     Box::pin(async move {
         let params: OpenParams = parse_params(params)?;
-        if let Some(interrupt) = &params.interrupt {
-            if interrupt != "whenIdle" && interrupt != "always" {
-                return Err(RpcError::invalid_params(
-                    "interrupt",
-                    "interrupt must be \"whenIdle\" or \"always\"",
-                ));
-            }
-        }
+        let interrupt = Interrupt::parse(params.interrupt.as_deref())?;
         let path = resolve_path(&params.path, &cx.shared.info.workspace_root);
         let on_disk = std::fs::metadata(&path);
         if matches!(&on_disk, Ok(m) if m.is_dir()) {
@@ -170,13 +165,14 @@ pub fn open(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
             )));
         }
         let exists = on_disk.is_ok();
-        let result =
-            on_editor(move |editor, _| open_on_main(editor, &path, exists, params)).await??;
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        on_editor(move |editor, compositor| {
+            interrupt::open(editor, compositor, interrupt, path, exists, params)
+        })
+        .await?
     })
 }
 
-fn open_on_main(
+pub(crate) fn open_on_main(
     editor: &mut Editor,
     path: &Path,
     exists: bool,

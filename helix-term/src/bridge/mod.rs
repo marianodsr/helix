@@ -127,6 +127,7 @@ pub fn start(editor: &Editor) {
         return;
     }
     events::install(editor, &shared);
+    methods::command::capture_policy(editor);
     let task = tokio::spawn(server::listen(dir, shared.clone()));
     shared.track(task.abort_handle());
     log::info!("bridge: started in {:?}", begin.elapsed());
