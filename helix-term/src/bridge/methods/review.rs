@@ -86,7 +86,9 @@ pub const COMMANDS: &[TypableCommand] = &[
         fun: bb_review,
         completer: CommandCompleter::positional(&[complete_target]),
         signature: Signature {
-            positionals: (0, Some(1)),
+            // the target is free text (`commit HEAD~1`); completion covers
+            // the first word
+            positionals: (0, None),
             ..Signature::DEFAULT
         },
     },
@@ -590,7 +592,9 @@ fn bb_review(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> an
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    let Some(target) = args.first().map(str::to_owned) else {
+    // every word, joined by single spaces: `:bb-review commit HEAD~1`
+    let target = (!args.is_empty()).then(|| args.join(" "));
+    let Some(target) = target else {
         // fail at once when there is no review; the picker is built when
         // the job queue can reach the compositor
         if STATE.lock().is_none() {

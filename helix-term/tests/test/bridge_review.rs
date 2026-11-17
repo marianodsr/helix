@@ -361,6 +361,11 @@ async fn review_errors_events_and_commands() -> anyhow::Result<()> {
             let ev = c.event("event/review").await?;
             assert_eq!(ev["target"], "branch");
             assert_eq!(ev["path"], a_s.as_str());
+            // the target is free text: every word, joined by single spaces
+            keys.send(":bb-review commit HEAD~1<ret>")?;
+            assert_eq!(c.event("event/review").await?["target"], "commit HEAD~1");
+            keys.send(":bb-review   pr    1234  <ret>")?;
+            assert_eq!(c.event("event/review").await?["target"], "pr 1234");
 
             // event/send carries the review
             keys.send(":bb-comment no review yet<ret>")?;

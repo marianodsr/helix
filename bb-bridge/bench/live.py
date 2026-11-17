@@ -1059,6 +1059,38 @@ def verify_review(args, check):
             sb.cleanup()
 
 
+def _check_comment_anchoring(hx, c, check, label):
+    """`x` three times from line 10, and a range inside line 11, then
+    `:bb-comment`: event/send carries exactly those ranges (review.txt holds
+    `line N` on line N)."""
+    hx.esc()
+    hx.send(";", pause=0.05)
+    c.drain(0.2)
+    hx.send("10gg", pause=0.1)
+    hx.send("xxx", pause=0.15)
+    hx.send(":bb-comment three lines" + ENTER, pause=0.2)
+    ev = c.event("event/send", timeout=3)
+    r = ev.get("ranges", [])
+    check(len(r) == 1 and r[0]["start"] == {"line": 10, "col": 1} and r[0]["end"] == {"line": 13, "col": 1}
+          and r[0]["text"] == "line 10\nline 11\nline 12\n" and ev.get("note") == "three lines",
+          f"{label}: x on lines 10-12: the three whole lines (to 13:1)", r)
+    hx.esc()
+    hx.send(";", pause=0.05)
+    # inside one line: from col 3, three characters
+    hx.send("11gglll", pause=0.15)
+    hx.send("vll", pause=0.15)
+    sel = c.call("editor/selection")["ranges"]
+    hx.send(":bb-comment part of a line" + ENTER, pause=0.2)
+    ev = c.event("event/send", timeout=3)
+    r = ev.get("ranges", [])
+    check(len(r) == 1 and r[0]["start"] == {"line": 11, "col": 4} and r[0]["end"] == {"line": 11, "col": 7}
+          and r[0]["text"] == "e 1" and r == sel,
+          f"{label}: a range inside line 11: exactly those characters", (r, sel))
+    hx.esc()
+    hx.esc()
+    hx.send(";gg", pause=0.1)
+
+
 def _verify_review(sb, hx, check, base):
     path, gone = sb.path("review.txt"), os.path.join(sb.repo, "gone.txt")
     reg = sb.registry(hx.pid)
@@ -1069,6 +1101,7 @@ def _verify_review(sb, hx, check, base):
     check("review" in hello["capabilities"], "review: capability", hello["capabilities"])
     c.call("events/subscribe", {"events": ["send"]})
     time.sleep(0.3)
+    _check_comment_anchoring(hx, c, check, "comment anchoring, no review")
     m = hx.mark()
     r = c.call("review/set", {"id": "live", "title": "Live", "base": {"rev": base}, "files": [
         {"path": path, "status": "modified", "additions": 1, "deletions": 1},
@@ -1078,6 +1111,7 @@ def _verify_review(sb, hx, check, base):
     check(hx.wait_text("line 5 LIVE-REMOVED-TEXT", m), "review: the removed line is drawn above the change")
     st = c.call("review/state", {})
     check(st["active"] and st["inline"] and st["files"] == 2, "review: review/state", st)
+    _check_comment_anchoring(hx, c, check, "comment anchoring, during a review")
     t = c.call("editor/text", {"path": path})
     check("LIVE-REMOVED-TEXT" not in t["text"] and not t["modified"], "review: the removed line is not in the document")
 
@@ -1094,6 +1128,12 @@ def _verify_review(sb, hx, check, base):
     hx.send(":bb-comment about this" + ENTER, pause=0.2)
     ev = c.event("event/send", timeout=3)
     check(ev.get("reviewId") == "live", "review: event/send carries reviewId", ev)
+
+    # :bb-review takes free text: every word goes to the client
+    c.call("events/subscribe", {"events": ["review", "send"]})
+    hx.send(":bb-review commit HEAD~1" + ENTER, pause=0.2)
+    ev = c.event("event/review", timeout=3)
+    check(ev.get("target") == "commit HEAD~1", "review: :bb-review commit HEAD~1 sends the whole target", ev)
 
     # the picker: both files, with counts
     m = hx.mark()

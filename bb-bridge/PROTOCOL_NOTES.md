@@ -818,6 +818,9 @@ should know about.
   line names it, `<path> (deleted): its text at the review's base, not a
   file`. The same deleted file reuses its buffer. Helix does not stop edits
   to it (they go nowhere).
+- **`:bb-review <target>`**: the target is free text, any number of words
+  (`:bb-review commit HEAD~1`, `:bb-review pr 1234`), sent as `target`
+  joined by single spaces; completion offers the first word.
 - **`:bb-review <target>`** with a client subscribed to `review`:
   `event/review { target, path, docId }` (`path` null for a scratch
   buffer) and the status `Asked bb for the <target> review`. `off` also
