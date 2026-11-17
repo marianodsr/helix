@@ -20,6 +20,8 @@ mod test {
     mod bridge;
     #[cfg(unix)]
     mod bridge_annotations;
+    #[cfg(unix)]
+    mod bridge_lsp;
     mod command_line;
     mod commands;
     #[cfg(unix)]

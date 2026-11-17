@@ -166,6 +166,11 @@ pub fn document_saved(editor: &Editor, doc: DocumentId) {
     events::document_saved(editor, doc);
 }
 
+/// A language server published diagnostics for `uri`, open or not.
+pub fn diagnostics_published(uri: &helix_core::Uri) {
+    methods::diagnostics::published(uri);
+}
+
 pub(crate) fn shared() -> Option<&'static Arc<Shared>> {
     BRIDGE.get().filter(|s| !s.is_stopped())
 }

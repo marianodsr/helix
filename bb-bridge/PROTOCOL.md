@@ -29,11 +29,13 @@ syntax). Those notes are part of the contract.
     "startedAt": "2026-11-16T22:10:03Z",
     "cwd": "/repo/services/payments",
     "workspaceRoot": "/repo",
-    "env": { "BB_THREAD_ID": "thr_…", "BB_ENVIRONMENT_ID": "env_…", "BB_PROJECT_ID": "proj_…", "BB_TERMINAL_ID": "…" }
+    "env": { "BB_THREAD_ID": "thr_…", "BB_ENVIRONMENT_ID": "env_…", "BB_PROJECT_ID": "proj_…", "BB_TERMINAL_ID": "…", "BB_TERMINAL_SESSION_ID": "…" }
   }
   ```
 
-  `env` carries only those four variables, and only the ones that are set.
+  `env` carries only those five variables, and only the ones that are set.
+  bb's own thread terminals export only `BB_TERMINAL_SESSION_ID`, which a
+  client maps to the terminal's thread.
   A client that fails to connect to a listed socket may delete both files
   (stale instance).
 - macOS limits a socket path to 104 bytes. When the default path would be

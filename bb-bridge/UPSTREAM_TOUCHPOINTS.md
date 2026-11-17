@@ -34,7 +34,10 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-view/src/editor.rs` | 2664–2665, 2673 | `reveal` in `BridgeConfig` | `[editor.bridge] reveal`; the struct is the bridge's own (appended in step 1). |
 | `helix-term/src/ui/mod.rs` | 2, 16 | `mod document` and `mod text_decorations` become `pub(crate)` | The bridge draws annotations as a `Decoration` with `TextRenderer`, the same mechanism inline diagnostics use. |
 | `helix-term/src/ui/editor.rs` | 208 | `crate::bridge::decorate(..)` just before `render_document` in `render_view` | Draws gutter signs, line backgrounds, the annotations' rows and the reveal highlight; after every other decoration, so its virtual lines stack in the order `text_annotations` reserved them. Returns at once when the document has none. |
-| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_annotations;` (Unix) | Step 2d integration tests. |
+| `helix-term/tests/integration.rs` | 21–24 | `mod bridge_annotations;` (Unix) | Step 2d integration tests. |
+| `helix-lsp/src/client.rs` | 43–46, 290, 294–299 | thread-local `LAST_REQUEST_ID`, set in `next_request_id`; `pub fn Client::last_request_id()` (step 2b) | Helix never sends `$/cancelRequest` and does not expose request ids. Read right after a typed request method returns (same thread, nothing in between), it names that request, so `lsp/query` can cancel it on timeout or `$/cancel` while still using Helix's own methods. No behaviour change for Helix. |
+| `helix-term/src/application.rs` | 849 | `crate::bridge::diagnostics_published(&uri);` in the `publishDiagnostics` handler (step 2b) | `DiagnosticsDidChange` only fires for open documents; servers like gopls publish for the whole workspace, and `event/diagnostics` covers those paths too. One relaxed atomic load when nobody subscribed. (Shifts the `close` hunk above to 1351.) |
+| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_lsp;` (Unix, step 2b) | Diagnostics and `lsp/*` integration tests. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.
@@ -53,6 +56,9 @@ Checked against the tip of `steel-event-system` (mattwparas/helix,
 | `typed.rs` `complete_command_line`, `commands.rs` `command_palette` | **Conflict, small**: steel rewrites these same expressions to chain its scripting-engine commands. Add the bridge chain next to steel's. |
 | `helix-term/Cargo.toml` | **Conflict, trivial**: different neighbouring lines (steel adds its features and dependencies); the tokio line itself is unchanged there. |
 | `Cargo.lock` | Regenerate. |
+
+The step 2b hunks (`helix-lsp/src/client.rs`, the `publishDiagnostics`
+line in `application.rs`) were not checked against that branch.
 
 None of the bridge's own files exist on that branch. A later port is a
 rebase with four small manual merges, all in lines that list commands or

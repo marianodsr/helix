@@ -560,8 +560,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
                 "editor/reload",
                 "locations/set",
                 "editor/applyEdits",
-                "diagnostics/get",
-                "lsp/query",
                 "view/list",
                 "editor/command",
             ] {

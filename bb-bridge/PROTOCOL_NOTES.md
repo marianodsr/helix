@@ -229,3 +229,125 @@ should know about.
   the running one.
 - `[editor.bridge] reveal` is read at each request (`:config-reload`
   applies it). Off: requests succeed with `animated: 0`.
+# Protocol notes (step 2b: diagnostics and language servers)
+
+## diagnostics/get
+
+- **What is listed.** For an open buffer: the diagnostics Helix shows for it
+  (mapped through unsaved edits), which means only those from servers
+  attached to that document with the diagnostics feature. For a file that
+  is not open: what servers published for it, converted with the server's
+  position encoding against the file on disk. If that file cannot be read
+  (deleted, over 64 MiB) the server's numbers are passed through, plus one.
+- A diagnostic without a severity counts as an error.
+- Order: errors first, then by path (byte order), then start position.
+- `limit` above 500 is cut to 500 (not an error). `"limit": 0` returns
+  exactly `{ "counts", "total" }`. `total` is after `minSeverity`; `counts`
+  before, as PROTOCOL.md says.
+- `path` that is not open, has no diagnostics and does not exist on disk is
+  `not_found`; an existing file with none gives an empty list.
+- `source`, `code` (number or string) and `server` (the server's name) are
+  left out when unknown.
+
+## event/diagnostics
+
+- Sent when a server publishes for a path (open or not) and when Helix's
+  diagnostics for an open buffer change, even if the counts stay the same,
+  so a client waiting for "the server looked at this again" is not left
+  waiting. Throttled per path like the other events: the first change after
+  a quiet 200 ms goes out at once, the rest of a burst as one event at the
+  end of the window, with the final counts.
+- When a server exits, every path that had counts gets an event if they
+  changed (usually to zero).
+- Coalescable: dropped first when a client's queue is full.
+
+## lsp/servers
+
+- `id` is Helix's language server id as a number (a slotmap key, like
+  `viewId`); `event/lsp` uses the same id.
+- `root` is the server's first workspace folder (the root Helix started it
+  in); `null` if it has none.
+- `languages`: Helix language names whose configuration lists the server.
+- `features` (empty until initialized), from the server's capabilities: the
+  `lsp/query` kinds it can answer first (`incomingCalls` and `outgoingCalls`
+  for call hierarchy, `renamePreview` for rename), then Helix's other
+  feature names: `declaration`, `diagnostics`, `pullDiagnostics`,
+  `completion`, `signatureHelp`, `codeAction`, `format`,
+  `documentHighlight`, `inlayHints`, `documentLinks`, `documentColors`,
+  `workspaceCommand`. Per-language `only-features`/`except-features` from
+  `languages.toml` apply when a query picks its server, not here.
+- Extra field: `positionEncoding` (`utf-8`, `utf-16`, `utf-32`; `null` until
+  initialized).
+
+## lsp/query
+
+- **Which server**: the first server attached to the document (in
+  `languages.toml` order) that is initialized, supports the feature and is
+  not excluded from it, the way Helix picks one for rename, hover and the
+  symbol pickers. Helix's own goto commands ask every such server and merge
+  the answers; the bridge asks only the first.
+- `workspaceSymbols` without `path`: the focused document's server, else
+  the first running server that supports it.
+- **`ensure: true`** (default), file not open: loaded in the background
+  (`editor/open` with `focus: false`), so the server gets `didOpen`; it is
+  closed again when the last query using it finishes, unless the user has
+  it in a pane by then or it was modified. The bufferline therefore does
+  not fill up with files an agent asked about. Clients subscribed to
+  `documents` see `documentOpened`/`documentClosed` for it. Reading the
+  file (and Helix's syntax parse of it) happens on the main thread, as for
+  `editor/open` with `focus: false`.
+- **`ensure: false`**, file not open: a running server for the file's
+  language (by file name) is asked about the file as it is on disk; the
+  position is converted against the disk text, off the main thread.
+- While a server for the file is still starting, the query waits for it
+  (within `timeoutMs`).
+- Positions in requests are clamped as everywhere else.
+- **Locations**: `references` and `implementation` are sorted by path and
+  position, duplicates removed; `definition` and `typeDefinition` keep the
+  server's order. A `LocationLink` gives its `targetSelectionRange` (the
+  name). `preview` is that line without its line ending, at most 200 chars,
+  `""` when the file cannot be read. Non-`file:` URIs are dropped.
+- Every list result has `total` and `truncated` and honours `limit`
+  (0 to 500, default 100) and `offset`.
+- **Symbols**: `kind` is the LSP symbol kind in camel case (`function`,
+  `method`, `struct`, `interface`, `enumMember`, `typeParameter`, …).
+  `location` is the symbol's name (`selectionRange`). `container` is the
+  parent symbol's name (nested answers) or the server's `containerName`
+  (flat answers); absent at top level. Extra field `extent`: the range of
+  the whole symbol, for `documentSymbols` answered in nested form (gopls,
+  rust-analyzer), so an agent can read a function's body.
+  `workspaceSymbols` answered without a range point at 1:1 of the file.
+- **Calls**: `{ "name", "kind", "location", "callSites": [Location] }`.
+  `location` is the other function's name; `callSites` are the call
+  expressions (in the caller's file for `incomingCalls`, in the queried
+  file for `outgoingCalls`), at most 50 per call. When the position
+  prepares several items, the calls of all of them are listed.
+- **renamePreview**: `files` is the sorted list of paths touched; `edits` is
+  sorted by path and position and paged (with `total` and `truncated`).
+  File operations (create, rename, delete) come in `fileOperations:
+  [{ "kind", "path", "newPath"? }]` when the server sends any. Nothing is
+  applied.
+- **hover**: language blocks become fenced code, several parts are joined
+  with a blank line, plain-text content is passed as is.
+- **Errors**: `no_language_server` has `data: { "language", "kind" }` with
+  Helix's language name (or `null` when the file has no language). A server
+  that answers with an error (gopls refusing an invalid new name) gives
+  `unsupported` with `data: { "server", "serverCode" }`. A server that exits
+  during the query gives `no_language_server` with `data.server`. Helix's
+  own request timeout (`[editor.lsp] timeout`, default 20 s) is `timeout`.
+  `timeoutMs` is clamped to 1–60000.
+- **Cancelling**: `$/cancel`, `timeoutMs` and a disconnecting client send
+  `$/cancelRequest` for the request in flight. gopls answers it with
+  `RequestCancelled`, which Helix writes to its log as an error line.
+- Extra param `timing: true` adds `timing: { "issueMs", "serverMs",
+  "shapeMs", "totalMs" }`: until the request was handed to Helix's client,
+  until the answer came back, building the result, whole handler. For
+  benchmarks.
+
+## event/lsp
+
+- `initialized` when Helix reports a server initialized. `exited` when
+  Helix reports one exited, and also for servers stopped by
+  `:lsp-restart` or `:lsp-stop`, which Helix drops without an exit event:
+  those are reported when the next server initializes or at the next key
+  press.

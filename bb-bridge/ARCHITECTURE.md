@@ -237,3 +237,30 @@ paths from the machine it was built on.
 - **Verified by doing it.** The installer is tested in a clean throwaway
   `HOME` on this machine (no Rust on `PATH`, no Helix config) before it is
   called done.
+
+## Integration step (after 2a to 2d are merged)
+
+Work that crosses the pieces, done once on the merged branch:
+
+1. **No redraw for requests that change nothing.** Helix redraws after every
+   job it dispatches to the main loop, so each bridge request costs a frame:
+   0.2 ms on a small file, about 7 ms on a very large one, which is paid by
+   the user's own key presses when a client asks often. Each method declares
+   whether it can change what is on screen; after a read-only one the redraw
+   is skipped. This is the one deliberate change to the main loop: a single
+   condition around the existing `render()` call for dispatched jobs, listed
+   in UPSTREAM_TOUCHPOINTS.md. Rule 2 above otherwise stands.
+2. **Wire the pieces together**: `editor/reload` with `reveal` calls
+   `reveal::play` with the ranges its diff produced; `locations` `goto`,
+   `editor/reveal` `follow` and `editor/reload` `follow` go through the
+   interrupt gate from 2c.
+3. **Kitty keyboard from the environment.** Inside bb, bb's terminal answers
+   the capability query before the editor surface can, so Helix never turns
+   the protocol on. `HELIX_KITTY_KEYBOARD=enabled|disabled` overrides the
+   `kitty-keyboard-protocol` setting at start; the plugin sets it on sessions
+   it starts.
+4. **Full benchmark on a quiet machine**, every row of the performance
+   table, including `lsp/query` overhead on a large Go repository.
+5. **Build hygiene.** Worktrees never share a cargo target directory: cargo
+   then reuses another worktree's build of a crate. Seed each worktree's own
+   `target/` as a copy-on-write clone (`cp -c -R`) instead.
