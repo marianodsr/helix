@@ -30,6 +30,12 @@ first, bump nothing silently, and keep it exact.
   `env` carries only those four variables, and only the ones that are set.
   A client that fails to connect to a listed socket may delete both files
   (stale instance).
+- macOS limits a socket path to 104 bytes. When the default path would be
+  longer than 100 bytes, Helix puts the socket at
+  `/tmp/helix-bridge-<uid>/<pid>.sock` instead (directory `0700`, owned by the
+  user, refused if it exists with another owner or mode). The registry file
+  stays in the cache directory, and its `socket` field is always the path to
+  connect to; clients never compute the socket path themselves.
 - Framing: newline-delimited JSON, UTF-8, one message per line, no embedded
   newlines. Messages are JSON-RPC 2.0 objects without batching.
 - Several clients may connect at once. Each has its own subscriptions.
@@ -42,7 +48,10 @@ first, bump nothing silently, and keep it exact.
 - **Positions** are `{ "line": L, "col": C }`, both 1-based. `col` counts
   Unicode scalar values (Rust `char`s) from the start of the line.
 - **Ranges** are `{ "start": P, "end": P }`, end-exclusive. A cursor with no
-  extent is a range whose start equals its end.
+  extent is a range whose start equals its end. Because the end is exclusive,
+  a selection of whole lines 10 to 12 is `{10,1}` to `{13,1}`: a range that
+  ends at column 1 of line N covers lines up to N-1. Anything that turns a
+  range into "lines A to B" for a person or an agent must apply that rule.
 - **Document version** is Helix's own integer revision counter for a buffer.
   It increases on every change, including undo.
 - **Limits**: a response carries at most 1 MiB of document text and at most
@@ -99,9 +108,9 @@ Params: `{}`. Result:
 }
 ```
 
-`mode` is `normal`, `insert` or `select`. `focused` is null for a scratch
-buffer with no path only in its `path` field; `focused` itself is always
-present. `documents` lists every open buffer (path null for scratch buffers).
+`mode` is `normal`, `insert` or `select`. `focused` is always present. For a
+scratch buffer that has no file, `focused.path` is null and the other fields
+are still set. `documents` lists every open buffer (path null for scratch buffers).
 
 ### editor/open
 
@@ -121,7 +130,8 @@ default), if the user is in insert mode or pressed a key in the last 1500 ms,
 Helix does not move: it stores the request as the pending jump (one slot, the
 newest wins), shows "bb wants to show <file>:<line> (:bb-go)" on the status
 line, and answers `"deferred": true`. `:bb-go` performs it. `always` moves at
-once.
+once. Every one of those methods accepts `interrupt` and includes
+`"deferred": <bool>` in its result; a deferred `editor/command` has not run.
 
 ### editor/text
 
@@ -230,8 +240,11 @@ them. Result: `{ "count" }`.
 Params: `{ "path"?, "minSeverity"?: "hint" | "info" | "warning" | "error",
 "limit"?, "offset"? }`. Diagnostics Helix currently holds, for one file or the
 whole workspace. Result: `{ "items": [{ "path", "range", "severity",
-"message", "source"?, "code"?, "server"? }], "total", "truncated" }`, errors
-first, then by path and position.
+"message", "source"?, "code"?, "server"? }], "total", "truncated",
+"counts": { "errors", "warnings", "infos", "hints" } }`, errors first, then by
+path and position. `counts` covers everything in scope (the file, or the
+workspace), before `minSeverity`, `limit` and `offset` are applied. A request
+with `"limit": 0` returns only `counts` and `total`.
 
 ### lsp/servers
 
