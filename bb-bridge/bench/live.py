@@ -673,6 +673,27 @@ def _verify(args, sb, hx, check):
         h3.kill()
         sb3.cleanup()
 
+    # integration step: HELIX_KITTY_KEYBOARD overrides kitty-keyboard-protocol
+    # at start (the pty here answers no queries, so auto never turns it on)
+    for value, push, query in ((None, False, True), ("enabled", True, False), ("disabled", False, False)):
+        sb4 = Sandbox()
+        h4 = sb4.start(args.hx, **({"HELIX_KITTY_KEYBOARD": value} if value else {}))
+        try:
+            started = sb4.registry(h4.pid) is not None
+            time.sleep(0.3)
+            with h4.lock:
+                raw = bytes(h4.out)
+            pushed = re.search(rb"\x1b\[>[0-9]+u", raw) is not None
+            queried = b"\x1b[?u" in raw
+            check(started and pushed == push and queried == query,
+                  f"HELIX_KITTY_KEYBOARD={value or '(unset)'}: kitty keyboard {'pushed' if push else 'not pushed'}"
+                  f"{', queried' if query else ', not queried'}", f"pushed={pushed} queried={queried}")
+            h4.send(":qa!" + ENTER)
+            h4.wait_exit()
+        finally:
+            h4.kill()
+            sb4.cleanup()
+
     # off switches
     for label, env, extra in (("HELIX_BRIDGE=0", {"HELIX_BRIDGE": "0"}, ""), ("enable = false", {}, "[editor.bridge]\nenable = false\n")):
         sb2 = Sandbox(extra_config=extra)

@@ -383,6 +383,43 @@ def _verify(sb, hx, check):
         check(False, "event/diagnostics: open buffer with an unsaved error")
     hx.send("u")
 
+    # --- integration: the server follows editor/reload and editor/applyEdits ---
+    def until(f, timeout=20.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                r = f()
+                if r:
+                    return r
+            except RpcError:
+                pass
+            time.sleep(0.2)
+        return None
+
+    def symbols(path):
+        return [s["name"] for s in q(c, "documentSymbols", path)["symbols"]]
+
+    c.call("editor/open", {"path": square_go, "focus": False})
+    time.sleep(0.05)  # a different mtime from the one Helix read
+    sb.write("shapes/square.go", FILES["shapes/square.go"] + "\nfunc (s Square) Perimeter() float64 { return 4 * s.S }\n")
+    r = c.call("editor/reload", {"paths": [square_go]})
+    check(r["reloaded"] == [square_go], "lsp after reload: the buffer reloaded", r)
+    check(until(lambda: "Perimeter" in symbols(square_go)), "lsp after reload: documentSymbols has the new method",
+          symbols(square_go))
+    h = until(lambda: q(c, "hover", square_go, 7, 17)["markdown"])
+    check(h and "Perimeter" in h, "lsp after reload: hover at the new line", h)
+
+    r = c.call("editor/applyEdits", {"path": square_go, "edits": [{
+        "range": {"start": {"line": 8, "col": 1}, "end": {"line": 8, "col": 1}},
+        "newText": "\nfunc (s Square) Diagonal() float64 { return s.S * 1.4142 }\n"}]})
+    check(r["modified"] is True, "lsp after applyEdits: buffer modified, not saved", r)
+    check(until(lambda: "Diagonal" in symbols(square_go)), "lsp after applyEdits: documentSymbols has the new method",
+          symbols(square_go))
+    h = until(lambda: q(c, "hover", square_go, 9, 17)["markdown"])
+    check(h and "Diagonal" in h, "lsp after applyEdits: hover at the new line", h)
+    with open(square_go) as f:
+        check("Diagonal" not in f.read(), "lsp after applyEdits: the file on disk is unchanged")
+
     # event/lsp: restart gopls
     c.drain(0.2)
     hx.esc()
