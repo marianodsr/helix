@@ -35,6 +35,7 @@ pub fn encode(value: &Value) -> Line {
 // --- listener ----------------------------------------------------------------
 
 pub async fn listen(dir: PathBuf, shared: Arc<Shared>) {
+    let begin = std::time::Instant::now();
     let listener = match bind(&dir, &shared.info.socket) {
         Ok(listener) => listener,
         Err(err) => {
@@ -51,7 +52,11 @@ pub async fn listen(dir: PathBuf, shared: Arc<Shared>) {
         let _ = std::fs::remove_file(&shared.info.socket);
         return;
     }
-    log::info!("bridge: listening on {:?}", shared.info.socket);
+    log::info!(
+        "bridge: listening on {:?} (bind and registry took {:?})",
+        shared.info.socket,
+        begin.elapsed()
+    );
     let mut next_id = 0;
     loop {
         let stream = match listener.accept().await {
@@ -118,7 +123,8 @@ fn write_registry(shared: &Shared) -> std::io::Result<()> {
         .open(&tmp)?;
     file.write_all(&serde_json::to_vec_pretty(&registry)?)?;
     file.write_all(b"\n")?;
-    file.sync_all()?;
+    // No fsync: the file only matters while this process runs, and readers
+    // never see a partial file thanks to the rename.
     std::fs::rename(&tmp, &info.registry)
 }
 

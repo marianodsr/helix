@@ -1,0 +1,34 @@
+#!/bin/sh
+# hxb: this fork of Helix, beside the stock `hx`.
+#
+# Finds the binary and its runtime relative to this script (following
+# symlinks, so `ln -s .../bb-bridge/hxb ~/.local/bin/hxb` works). Two layouts:
+#   installed:  <dir>/hxb, <dir>/hx, <dir>/runtime/
+#   checkout:   bb-bridge/hxb, target/release/hx, runtime/
+# The user's own config (~/.config/helix) is read as usual.
+
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+here=$(cd "$(dirname "$self")" && pwd -P)
+
+if [ -x "$here/hx" ] && [ -d "$here/runtime" ]; then
+    bin=$here/hx
+    runtime=$here/runtime
+else
+    root=$(dirname "$here")
+    bin=$root/target/release/hx
+    runtime=$root/runtime
+fi
+
+if [ ! -x "$bin" ]; then
+    echo "hxb: no binary at $bin (build with: cargo build --release)" >&2
+    exit 1
+fi
+
+HELIX_RUNTIME=$runtime exec "$bin" "$@"

@@ -108,13 +108,15 @@ struct Seen {
     view: Option<ViewId>,
     doc: Option<DocumentId>,
     mode: Option<Mode>,
+    /// The last `documentChanged` sent: document, version, modified.
+    changed: Option<(DocumentId, i32, bool)>,
 }
 
 runtime_local! {
     static HOT: Hot = Hot {
         wants: AtomicU32::new(0),
         tx: OnceLock::new(),
-        seen: Mutex::new(Seen { view: None, doc: None, mode: None }),
+        seen: Mutex::new(Seen { view: None, doc: None, mode: None, changed: None }),
     };
 }
 
@@ -242,7 +244,20 @@ pub fn install(editor: &Editor, shared: &Arc<Shared>) {
                 }
             }
             if wants(DOCUMENTS) {
-                send(Msg::Changed(DocMeta::of(event.doc)));
+                // The change is composed into the document only after this
+                // hook, so `is_modified` may still say false. A change leaves
+                // the buffer unmodified only when it returns to the saved
+                // state (undo, redo, reload); `check_editor` corrects those.
+                let doc = &*event.doc;
+                let meta = DocMeta {
+                    doc: doc.id(),
+                    path: doc.path().map(Path::to_path_buf),
+                    language: None,
+                    version: doc.version(),
+                    modified: true,
+                };
+                HOT.seen.lock().changed = Some((meta.doc, meta.version, true));
+                send(Msg::Changed(meta));
             }
         }
         Ok(())
@@ -302,6 +317,15 @@ fn check_editor(editor: &Editor) {
     let Some(view) = editor.tree.try_get(editor.tree.focus) else {
         return;
     };
+    if let Some((doc, version, modified)) = seen.changed.filter(|c| c.0 == view.doc) {
+        match editor.document(doc) {
+            Some(d) if d.version() == version && d.is_modified() != modified => {
+                seen.changed = Some((doc, version, !modified));
+                send(Msg::Changed(DocMeta::of(d)));
+            }
+            _ => {}
+        }
+    }
     if seen.view == Some(view.id) && seen.doc == Some(view.doc) {
         return;
     }
@@ -348,7 +372,9 @@ pub fn seed(editor: &Editor) {
 pub fn document_saved(editor: &Editor, doc: DocumentId) {
     if wants(DOCUMENTS) {
         if let Some(doc) = editor.document(doc) {
-            send(Msg::Saved(DocMeta::of(doc)));
+            let meta = DocMeta::of(doc);
+            HOT.seen.lock().changed = Some((meta.doc, meta.version, meta.modified));
+            send(Msg::Saved(meta));
         }
     }
 }
@@ -417,9 +443,28 @@ struct Coalescer<S: Sink> {
     /// Latest selection per view since the last flush.
     selections: Vec<SelSnap>,
     selection_due: Option<Instant>,
+    selection_sent: Option<Instant>,
     last_selection: Option<serde_json::Value>,
     changes: HashMap<DocumentId, DocMeta>,
     changes_due: Option<Instant>,
+    changes_sent: Option<Instant>,
+}
+
+/// Throttle with a leading edge: emit now if nothing went out in the last
+/// `window`, otherwise once the window since the last emission ends. A lone
+/// change therefore waits for no timer, and a burst is at most one event per
+/// window, carrying the final state.
+fn schedule(due: &mut Option<Instant>, sent: Option<Instant>, window: Duration) -> bool {
+    if due.is_some() {
+        return false;
+    }
+    match sent {
+        Some(sent) if sent.elapsed() < window => {
+            *due = Some(sent + window);
+            false
+        }
+        _ => true,
+    }
 }
 
 async fn run(mut rx: UnboundedReceiver<Msg>, shared: Arc<Shared>) {
@@ -428,9 +473,11 @@ async fn run(mut rx: UnboundedReceiver<Msg>, shared: Arc<Shared>) {
         focus: None,
         selections: Vec::new(),
         selection_due: None,
+        selection_sent: None,
         last_selection: None,
         changes: HashMap::new(),
         changes_due: None,
+        changes_sent: None,
     };
     loop {
         let sel_due = c.selection_due;
@@ -440,7 +487,12 @@ async fn run(mut rx: UnboundedReceiver<Msg>, shared: Arc<Shared>) {
                 Some(msg) => c.handle(msg),
                 None => break,
             },
-            _ = sleep_until(sel_due), if sel_due.is_some() => c.flush_selection(),
+            _ = sleep_until(sel_due), if sel_due.is_some() => {
+                c.flush_selection();
+                if let Some(due) = sel_due {
+                    log::debug!("bridge: selection flushed {:?} after its window", due.elapsed());
+                }
+            }
             _ = sleep_until(changes_due), if changes_due.is_some() => c.flush_changes(),
         }
     }
@@ -481,8 +533,9 @@ impl<S: Sink> Coalescer<S> {
             }
             Msg::Changed(meta) => {
                 self.changes.insert(meta.doc, meta);
-                self.changes_due
-                    .get_or_insert_with(|| Instant::now() + CHANGED_WINDOW);
+                if schedule(&mut self.changes_due, self.changes_sent, CHANGED_WINDOW) {
+                    self.flush_changes();
+                }
             }
             Msg::Opened(meta) => {
                 self.emit(
@@ -534,8 +587,13 @@ impl<S: Sink> Coalescer<S> {
             Some(slot) => *slot = snap,
             None => self.selections.push(snap),
         }
-        self.selection_due
-            .get_or_insert_with(|| Instant::now() + SELECTION_WINDOW);
+        if schedule(
+            &mut self.selection_due,
+            self.selection_sent,
+            SELECTION_WINDOW,
+        ) {
+            self.flush_selection();
+        }
     }
 
     fn flush_selection(&mut self) {
@@ -564,6 +622,7 @@ impl<S: Sink> Coalescer<S> {
             return;
         }
         self.last_selection = Some(value.clone());
+        self.selection_sent = Some(Instant::now());
         self.sink
             .emit(Kind::Selection, "event/selection", value, true);
     }
@@ -577,6 +636,9 @@ impl<S: Sink> Coalescer<S> {
         }
     }
 
+    /// Changes go out before a save or close of the same document, even
+    /// inside the window, so a client never sees them in the wrong order.
+
     fn flush_change_of(&mut self, doc: DocumentId) {
         if let Some(meta) = self.changes.remove(&doc) {
             self.emit_change(meta);
@@ -586,7 +648,8 @@ impl<S: Sink> Coalescer<S> {
         }
     }
 
-    fn emit_change(&self, meta: DocMeta) {
+    fn emit_change(&mut self, meta: DocMeta) {
+        self.changes_sent = Some(Instant::now());
         self.emit(
             Kind::Documents,
             "event/documentChanged",
@@ -686,9 +749,11 @@ mod tests {
             focus: None,
             selections: Vec::new(),
             selection_due: None,
+            selection_sent: None,
             last_selection: None,
             changes: HashMap::new(),
             changes_due: None,
+            changes_sent: None,
         }
     }
 
@@ -718,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selection_keeps_only_the_latest_for_the_focused_view() {
+    async fn selection_leading_edge_then_latest_for_the_focused_view() {
         let buf = Buf::default();
         let mut c = coalescer(&buf);
         c.handle(Msg::Focus {
@@ -728,15 +793,19 @@ mod tests {
             announce: false,
             sel: None,
         });
+        // the first change after a quiet period goes out at once
         c.handle(Msg::Selection(snap(view(1), 1, 0)));
+        assert_eq!(buf.methods(), ["event/selection"]);
+        assert!(c.selection_due.is_none());
+        // the rest of the burst waits for the window, latest wins
         c.handle(Msg::Selection(snap(view(2), 1, 3)));
         c.handle(Msg::Selection(snap(view(1), 2, 7)));
         assert!(c.selection_due.is_some());
-        assert!(buf.0.borrow().is_empty(), "nothing before the window ends");
+        assert_eq!(buf.0.borrow().len(), 1);
         c.flush_selection();
         let events = buf.0.borrow();
-        assert_eq!(events.len(), 1);
-        let (kind, method, params, coalescable) = &events[0];
+        assert_eq!(events.len(), 2);
+        let (kind, method, params, coalescable) = &events[1];
         assert_eq!(*kind, Kind::Selection);
         assert_eq!(method, "event/selection");
         assert!(coalescable);
@@ -747,11 +816,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quiet_period_resets_the_throttle() {
+        let buf = Buf::default();
+        let mut c = coalescer(&buf);
+        c.handle(Msg::Selection(snap(view(1), 1, 0)));
+        c.selection_sent = Some(Instant::now() - SELECTION_WINDOW * 2);
+        c.handle(Msg::Selection(snap(view(1), 1, 2)));
+        assert_eq!(buf.methods(), ["event/selection", "event/selection"]);
+        assert!(c.selection_due.is_none());
+    }
+
+    #[tokio::test]
     async fn unchanged_selection_is_not_repeated() {
         let buf = Buf::default();
         let mut c = coalescer(&buf);
         c.handle(Msg::Selection(snap(view(1), 1, 0)));
-        c.flush_selection();
         c.handle(Msg::Selection(snap(view(1), 1, 0)));
         c.flush_selection();
         c.handle(Msg::Selection(snap(view(1), 1, 2)));
@@ -776,31 +855,32 @@ mod tests {
         c.handle(Msg::Changed(meta(1)));
         c.handle(Msg::Changed(meta(2)));
         c.handle(Msg::Changed(meta(3)));
-        assert!(buf.0.borrow().is_empty());
+        assert_eq!(buf.methods(), ["event/documentChanged"]);
+        assert!(c.changes_due.is_some());
         c.handle(Msg::Saved(meta(3)));
-        assert_eq!(
-            buf.methods(),
-            ["event/documentChanged", "event/documentSaved"]
-        );
-        assert_eq!(buf.0.borrow()[0].2["version"], 3);
-        assert!(c.changes_due.is_none());
-
-        c.handle(Msg::Changed(meta(4)));
-        c.handle(Msg::Closed(meta(4)));
-        c.flush_changes();
         assert_eq!(
             buf.methods(),
             [
                 "event/documentChanged",
-                "event/documentSaved",
                 "event/documentChanged",
-                "event/documentClosed"
+                "event/documentSaved"
             ]
+        );
+        assert_eq!(buf.0.borrow()[1].2["version"], 3);
+        assert!(c.changes_due.is_none());
+
+        c.handle(Msg::Changed(meta(4)));
+        assert_eq!(buf.0.borrow().len(), 3, "inside the window");
+        c.handle(Msg::Closed(meta(4)));
+        c.flush_changes();
+        assert_eq!(
+            &buf.methods()[3..],
+            ["event/documentChanged", "event/documentClosed"]
         );
     }
 
     #[tokio::test]
-    async fn focus_announces_and_queues_selection() {
+    async fn focus_announces_and_sends_selection() {
         let buf = Buf::default();
         let mut c = coalescer(&buf);
         c.handle(Msg::Focus {
@@ -810,11 +890,9 @@ mod tests {
             announce: true,
             sel: Some(snap(view(3), 5, 0)),
         });
-        assert_eq!(buf.methods(), ["event/focus"]);
+        assert_eq!(buf.methods(), ["event/focus", "event/selection"]);
         assert_eq!(buf.0.borrow()[0].2["path"], "/r/b.rs");
         assert_eq!(buf.0.borrow()[0].2["docId"], 1);
-        c.flush_selection();
-        assert_eq!(buf.methods(), ["event/focus", "event/selection"]);
     }
 
     #[test]

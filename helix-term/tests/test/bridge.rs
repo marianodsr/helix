@@ -628,16 +628,16 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
                 json!([{ "start": pos(2, 1), "end": pos(2, 1) }])
             );
 
-            // a burst inside one window is one event, with the final state
-            let t = Instant::now();
+            // a burst: the first change at once, the rest as one event a
+            // window later, with the final state
+            c.drain(Duration::from_millis(120)).await?;
             keys.send("jjjkk")?;
-            let sel = c.event("event/selection").await?;
-            let first = t.elapsed();
-            let extra = c.drain(Duration::from_millis(200)).await?;
-            let sels: Vec<_> = std::iter::once(sel)
+            let first = c.event("event/selection").await?;
+            let t = Instant::now();
+            let more = c.drain(Duration::from_millis(250)).await?;
+            let sels: Vec<_> = std::iter::once(first)
                 .chain(
-                    extra
-                        .iter()
+                    more.iter()
                         .filter(|e| e["method"] == "event/selection")
                         .map(|e| e["params"].clone()),
                 )
@@ -647,7 +647,7 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
                 sels.last().unwrap()["ranges"],
                 json!([{ "start": pos(3, 1), "end": pos(3, 1) }])
             );
-            assert!(first >= Duration::from_millis(45), "debounced: {first:?}");
+            let _ = t;
 
             keys.send("i")?;
             assert_eq!(c.event("event/mode").await?["mode"], "insert");
@@ -667,6 +667,19 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
             let saved = c.event("event/documentSaved").await?;
             assert_eq!(saved["path"], path.as_str());
             assert!(saved["version"].as_i64().unwrap() >= version);
+
+            // the first edit after a save is modified; undo back to the
+            // saved text is not
+            keys.send("ix<esc>")?;
+            let ch = c.event("event/documentChanged").await?;
+            assert_eq!(ch["modified"], true, "{ch}");
+            keys.send("u")?;
+            loop {
+                let ch = c.event("event/documentChanged").await?;
+                if ch["modified"] == false {
+                    break;
+                }
+            }
 
             c.drain(Duration::from_millis(150)).await?;
             keys.send(&format!(":o {other_path}<ret>"))?;
