@@ -397,7 +397,7 @@ knows it. Errors: `no_language_server`, `timeout`, `not_found`.
 ### events/subscribe, events/unsubscribe
 
 Params: `{ "events": ["selection", "documents", "diagnostics", "mode",
-"send", "lsp", "externalChange", "review"] }`. Result: `{ "subscribed": [..] }`.
+"send", "lsp", "externalChange", "review", "files"] }`. Result: `{ "subscribed": [..] }`.
 Events arrive as notifications. With no subscriber for a kind, Helix does no
 work for it.
 
@@ -413,6 +413,7 @@ work for it.
 | `event/send` | `{ "kind": "send" \| "ask" \| "comment" \| "flush", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false, "reviewId"? }` | the user ran one of the `:bb-*` commands below; `flush` carries no ranges |
 | `event/lsp` | `{ "id", "name", "state": "initialized" \| "exited" }` | |
 | `event/externalChange` | `{ "path", "modified": true }` | a file open with unsaved changes also changed on disk |
+| `event/files` | `{ "path", "docId", "cwd" }` | the user ran `:bb-files`; the client shows and focuses its file tree on `path` (the focused file, null for a scratch buffer) |
 | `event/review` | `{ "target": "<text>", "path", "docId" }` | the user ran `:bb-review <target>`; the client works out the base and the files and answers with `review/set` (or `review/clear` for `off`). `path` is the focused file, for clients that need to know which repository. |
 
 A slow client never blocks the editor: each client has a bounded outbound
@@ -433,6 +434,7 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 | `:bb-status` | Shows the connected clients (with their subscriptions), what the bridge offers and the socket path. |
 | `:bb-annotations` | Hides or shows every bridge annotation for the session. |
 | `:bb-review [target]` | With no argument: a picker over the active review's files (status, `+n -m`, path, with the file's diff as the preview); Enter opens the file at its first change. With a target: emits `event/review`. Targets are free text for the client; the completion offers `uncommitted`, `branch`, `turn`, `commit`, `pr` and `off`. With no client subscribed to `review`, `uncommitted` and `off` still work (they need nothing from a client) and other targets fail with a status-line error. |
+| `:bb-files` | Opens the file tree. With a client subscribed to `files` (inside bb): emits `event/files` and does nothing else; the client shows its tree. With none (Helix in an ordinary terminal): Helix runs the file manager itself, full screen, as a chooser, and opens what the user picks; cancelling changes nothing. The file manager is `[editor.bridge] file-manager`, by default yazi started on the focused file. A missing program is a status-line error. |
 | `:bb-diff` | Switches the inline diff on and off for the session, with or without a review (without one it shows uncommitted changes inline). |
 
 When no client is subscribed to `send`, the commands that emit `event/send` fail with a status-line
@@ -453,6 +455,9 @@ enable = true          # default in this fork; false disables the socket entirel
 commands = "safe"      # what editor/command may run: "safe", "all" or "none"
 reveal = true          # animate text an agent just wrote (editor/reveal)
 inline-diff = false    # draw the inline diff from the start, against HEAD
+# what :bb-files runs when no client offers a tree; {chooser} is a temp file the
+# program writes the chosen paths to, one per line, and {path} the focused file
+file-manager = ["yazi", "--chooser-file", "{chooser}", "{path}"]
 ```
 
 `HELIX_BRIDGE=0` in the environment also disables it.
