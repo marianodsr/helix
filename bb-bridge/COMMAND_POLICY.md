@@ -76,6 +76,7 @@ upstream adds a command nobody has classified.
 | `bb-comment` |  | refused: sends a message to bb in the user's name |
 | `bb-comments-send` |  | refused: sends a message to bb in the user's name |
 | `bb-diff` |  | allowed |
+| `bb-emit` |  | refused: makes bb act in the user's name |
 | `bb-files` |  | refused: runs the file manager program when bb shows no tree |
 | `bb-go` |  | allowed |
 | `bb-locations` |  | allowed |

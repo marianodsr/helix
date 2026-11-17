@@ -1125,3 +1125,72 @@ async fn two_clients_and_one_that_stops_reading() -> anyhow::Result<()> {
     bridge.finish().await?;
     Ok(())
 }
+
+/// `:bb-comment` with no text and a client subscribed to `commentPrompt`:
+/// `event/commentRequest` with the selection and its cells, no prompt.
+/// `:bb-emit`: `event/action`, refused through `editor/command` under safe.
+#[tokio::test(flavor = "multi_thread")]
+async fn comment_request_and_emit() -> anyhow::Result<()> {
+    let text: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    let file = helpers::temp_file_with_contents(&text)?;
+    let path = canonical(file.path());
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(file.path(), None))?;
+    let p = path.clone();
+    bridge
+        .run(move |keys, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["commentPrompt", "action"]).await?;
+            // lines 10 to 12, as `x` selects them
+            c.call(
+                "editor/select",
+                json!({ "ranges": [{ "start": pos(10, 1), "end": pos(13, 1) }], "interrupt": "always" }),
+            )
+            .await?;
+            keys.send(":bb-comment<ret>")?;
+            let ev = c.event("event/commentRequest").await?;
+            assert_eq!(ev["path"], p.as_str());
+            assert_eq!(ev["ranges"][0]["start"], pos(10, 1));
+            assert_eq!(ev["ranges"][0]["end"], pos(13, 1));
+            assert_eq!(ev["ranges"][0]["text"], "line 10\nline 11\nline 12\n");
+            assert!(ev.get("kind").is_none() && ev.get("note").is_none(), "{ev}");
+            let screen = &ev["screen"];
+            // the test terminal is 120x150; one view, the file from line 1
+            assert_eq!((screen["rows"].clone(), screen["cols"].clone()), (json!(150), json!(120)));
+            let (top, bottom) = (&screen["top"], &screen["bottom"]);
+            assert_eq!(bottom["row"].as_u64().unwrap() - top["row"].as_u64().unwrap(), 2, "{screen}");
+            assert_eq!(top["row"], 9, "line 10 is the tenth row: {screen}");
+            assert_eq!(
+                bottom["col"].as_u64().unwrap() - top["col"].as_u64().unwrap(),
+                6,
+                "the last cell is the '2' of 'line 12': {screen}"
+            );
+            // :bb-emit
+            keys.send(":bb-emit review-next a b<ret>")?;
+            let ev = c.event("event/action").await?;
+            assert_eq!(ev["name"], "review-next");
+            assert_eq!(ev["args"], json!(["a", "b"]));
+            assert_eq!(ev["mode"], "normal");
+            assert_eq!(ev["path"], p.as_str());
+            let err = c
+                .error("editor/command", json!({ "typed": "bb-emit review-next" }))
+                .await?;
+            assert_eq!(err["code"], 1007, "{err}");
+            // without a commentPrompt subscriber, Helix's prompt opens
+            c.call("events/unsubscribe", json!({ "events": ["commentPrompt"] }))
+                .await?;
+            c.subscribe(&["send"]).await?;
+            keys.send(":bb-comment<ret>")?;
+            until_overlay("prompt").await?;
+            keys.send("typed<ret>")?;
+            let ev = c.event("event/send").await?;
+            assert_eq!((ev["kind"].clone(), ev["note"].clone()), (json!("comment"), json!("typed")));
+            // nobody listening for actions: an error, nothing sent
+            c.call("events/unsubscribe", json!({ "events": ["action"] }))
+                .await?;
+            keys.send(":bb-emit nothing<ret>")?;
+            until_status("'bb-emit': No bb client is listening for 'nothing' (:bb-emit)").await
+        })
+        .await?;
+    bridge.finish().await?;
+    Ok(())
+}

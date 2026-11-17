@@ -49,10 +49,12 @@ pub enum Kind {
     ExternalChange,
     Files,
     Review,
+    Action,
+    CommentPrompt,
 }
 
 impl Kind {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 11;
     pub const ALL: [Kind; Self::COUNT] = [
         Kind::Selection,
         Kind::Documents,
@@ -63,6 +65,8 @@ impl Kind {
         Kind::ExternalChange,
         Kind::Files,
         Kind::Review,
+        Kind::Action,
+        Kind::CommentPrompt,
     ];
 
     pub const fn bit(self) -> u32 {
@@ -80,6 +84,8 @@ impl Kind {
             Kind::ExternalChange => "externalChange",
             Kind::Files => "files",
             Kind::Review => "review",
+            Kind::Action => "action",
+            Kind::CommentPrompt => "commentPrompt",
         }
     }
 
@@ -221,6 +227,12 @@ pub enum Msg {
     },
     Mode(Mode),
     Send(SendSnap),
+    /// `event/commentRequest`: the selection as `event/send` carries it,
+    /// and where it is on screen.
+    CommentRequest {
+        snap: SendSnap,
+        screen: serde_json::Value,
+    },
 }
 
 // --- hooks -------------------------------------------------------------------
@@ -594,6 +606,16 @@ impl<S: Sink> Coalescer<S> {
             Msg::Send(snap) => {
                 let event = send_event(snap);
                 self.emit(Kind::Send, "event/send", event, false);
+            }
+            Msg::CommentRequest { snap, screen } => {
+                let mut event = serde_json::to_value(send_event(snap)).unwrap_or_default();
+                if let Some(fields) = event.as_object_mut() {
+                    for field in ["kind", "note", "sendNow"] {
+                        fields.remove(field);
+                    }
+                    fields.insert("screen".into(), screen);
+                }
+                self.emit(Kind::CommentPrompt, "event/commentRequest", event, false);
             }
         }
     }

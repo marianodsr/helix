@@ -100,6 +100,7 @@ const REFUSED_TYPED: &[(&str, &str)] = &[
     ("bb-ask", SPEAKS),
     ("bb-comment", SPEAKS),
     ("bb-comments-send", SPEAKS),
+    ("bb-emit", "makes bb act in the user's name"),
     (
         "bb-files",
         "runs the file manager program when bb shows no tree",

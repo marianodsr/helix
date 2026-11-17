@@ -113,6 +113,7 @@ All are typed commands (`:bb-…`) and complete on the command line.
 | `:bb-annotations` | show or hide the agent's comments drawn in the code |
 | `:bb-review [target]` | pick a file of the review bb set (its diff in the preview); with `uncommitted`, `branch`, `turn`, `commit`, `pr` or `off`, start or end one |
 | `:bb-diff` | show or hide removed and added lines in place (against the review's base, or `HEAD`) |
+| `:bb-emit <name> [words]` | ask bb to do something it names (bind keys to bb's own actions) |
 | `:bb-files` | the file tree: bb's own inside bb, otherwise the file manager (yazi) full screen, opening what you pick |
 
 ### Key bindings

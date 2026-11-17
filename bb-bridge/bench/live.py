@@ -5,6 +5,7 @@
     live.py files   [--hx PATH]                   # only the :bb-files checks
     live.py review  [--hx PATH]                   # only the review checks (step 5)
     live.py watch   [--hx PATH]                   # only the watch checks (step 6)
+    live.py comment [--hx PATH]                   # event/commentRequest cells against tmux, :bb-emit
     live.py bench   [--hx PATH]
     live.py compat  [--hx PATH] [--config DIR]   # DIR contains helix/config.toml
     live.py lspbench [--hx PATH] [-n 50]          # step 2b, needs ~/go/bin/gopls
@@ -44,6 +45,7 @@ from rtt import fmt, measure  # noqa: E402
 import live_lsp  # noqa: E402  (step 2b)
 import redraw  # noqa: E402  (integration step)
 import live_watch  # noqa: E402  (step 6: the watch)
+import live_comment  # noqa: E402  (event/commentRequest, :bb-emit)
 
 ESC = "\x1b"
 ENTER = "\r"
@@ -459,6 +461,7 @@ def verify(args):
     verify_files(args, check)
     live_watch.verify(args, Sandbox, check)
     verify_review(args, check)
+    live_comment.verify(args, check)
     # --- step 2b: diagnostics and lsp (bb-bridge/bench/live_lsp.py) ---
     live_lsp.verify(args, Sandbox, check)
     # --- end step 2b ---
@@ -909,6 +912,13 @@ def verify_files(args, check):
     finally:
         if not args.keep:
             sb.cleanup()
+
+
+def comment_only(args):
+    check = Checks()
+    live_comment.verify(args, check)
+    print(f"\n{check.passed} passed, {check.failed} failed")
+    return 1 if check.failed else 0
 
 
 def watch_only(args):
@@ -1493,7 +1503,7 @@ def snapshot(directory):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mode", choices=["verify", "files", "review", "bench", "compat", "lspbench", "lspbig", "redraw",
-                                     "watch"])
+                                     "watch", "comment"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
@@ -1510,7 +1520,7 @@ def main():
     args = ap.parse_args()
     modes = {"verify": verify, "files": verify_files_only, "review": verify_review_only, "bench": bench, "compat": compat,
              "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),
-             "redraw": lambda a: redraw.bench(a, Sandbox), "watch": watch_only}
+             "redraw": lambda a: redraw.bench(a, Sandbox), "watch": watch_only, "comment": comment_only}
     sys.exit(modes[args.mode](args))
 
 

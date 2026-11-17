@@ -836,3 +836,38 @@ should know about.
 - The command policy allows `bb-review` and `bb-diff` under `safe`: they
   change what is drawn and ask the client for a review, which a client can
   set directly anyway; nothing is sent to the agent.
+
+## `event/commentRequest` and `:bb-emit`
+
+- **`:bb-comment` with no text**, with a client subscribed to
+  `commentPrompt`: emits `event/commentRequest` and opens nothing; no
+  subscriber to `send` is needed then. Without such a client it opens the
+  `comment:` prompt exactly as before (which needs a `send` subscriber).
+  With text it emits `event/send` as before.
+- `event/commentRequest` carries what `event/send` would (`path`, `docId`,
+  `languageId`, `version`, `modified`, `ranges` of every selection with
+  their text, `truncated`, `reviewId` during a review), without `kind`,
+  `note` and `sendNow`, plus `screen`.
+- **`screen`**: `top` is the cell of the primary selection's first
+  grapheme, `bottom` the cell of its last one not counting a final line
+  ending (so three whole lines selected with `x` end on the last character
+  of the third). Cells are 0-based rows and columns of the terminal grid,
+  computed the way the renderer places text: the view's area without its
+  gutter (splits, the bufferline above), its scroll offsets, soft wrap,
+  and every virtual line `View::text_annotations` reserves (annotations,
+  the inline diff's removed lines, inline diagnostics). A cell above the
+  view is clamped to its first row and column 0, one below to its last row
+  and column 0, one left or right of a horizontally scrolled view to its
+  first or last column. `rows`/`cols` are the terminal's size. Computed in
+  a main-loop job right after the command, the frame the user sees.
+  Checked against tmux captures (`live.py comment`): plain view, under an
+  annotation's virtual lines, under the inline diff's removed line, the
+  right pane of a split, the second row of a soft-wrapped line, three
+  whole lines.
+- **`:bb-emit <name> [words]`**: `event/action { name, args, path, docId,
+  mode }`, `args` being the words after the name as Helix parses a typed
+  command line (quotes group, `%` expands). Any mode; bind it like the
+  other commands. No client subscribed to `action`: a status-line error
+  naming the action, nothing sent. `editor/command` refuses it under
+  `safe` (it makes bb act in the user's name). No completion.
+

@@ -1,5 +1,5 @@
 //! `:bb-send`, `:bb-send!`, `:bb-ask`, `:bb-comment`, `:bb-comments-send`,
-//! `:bb-status`. Ordinary typed commands with no default key binding; users
+//! `:bb-emit`, `:bb-status`. Ordinary typed commands with no default key binding; users
 //! bind them in their own config, e.g. `C = ":bb-comment"` under
 //! `[keys.select]`.
 
@@ -71,6 +71,17 @@ pub const COMMANDS: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "bb-emit",
+        aliases: &[],
+        doc: "Ask bb to do something: `:bb-emit <name> [words]`. The names are bb's.",
+        fun: bb_emit,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "bb-status",
         aliases: &[],
         doc: "Show the bb bridge socket and connected clients.",
@@ -122,8 +133,19 @@ fn bb_comment(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    ensure_listener()?;
     let text = note(&args);
+    if text.is_empty() && events::wants_kind(Kind::CommentPrompt) {
+        // the client asks for the text in its own UI, placed by the
+        // selection's cells, which need the compositor's size: a job
+        cx.jobs.callback(async move {
+            let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+                request_comment(editor, compositor);
+            };
+            Ok(Callback::EditorCompositor(Box::new(call)))
+        });
+        return Ok(());
+    }
+    ensure_listener()?;
     if !text.is_empty() {
         emit(cx.editor, SendKind::Comment, text, false)?;
         cx.editor.set_status("Comment added");
@@ -155,6 +177,109 @@ fn bb_comment(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
         Ok(Callback::EditorCompositor(Box::new(call)))
     });
     Ok(())
+}
+
+fn bb_emit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name = args.first().unwrap_or_default().to_owned();
+    let shared = events::wants_kind(Kind::Action)
+        .then(crate::bridge::shared)
+        .flatten();
+    let Some(shared) = shared else {
+        bail!("No bb client is listening for '{name}' (:bb-emit)");
+    };
+    let (_, doc) = current_ref!(cx.editor);
+    let rest: Vec<String> = args.iter().skip(1).map(|a| a.to_string()).collect();
+    events::broadcast(
+        shared,
+        Kind::Action,
+        "event/action",
+        serde_json::json!({
+            "name": name,
+            "args": rest,
+            "path": crate::bridge::convert::path_string(doc.path()),
+            "docId": crate::bridge::convert::doc_num(doc.id()),
+            "mode": events::mode_name(cx.editor.mode()),
+        }),
+        false,
+    );
+    Ok(())
+}
+
+/// `event/commentRequest`: the primary selection as `event/send` carries
+/// it, and its first and last visible cells in the terminal grid.
+fn request_comment(editor: &mut Editor, compositor: &Compositor) {
+    let (view, doc) = current_ref!(editor);
+    let size = compositor.size();
+    let (top, bottom) = selection_cells(editor);
+    let screen = serde_json::json!({
+        "top": top,
+        "bottom": bottom,
+        "rows": size.height,
+        "cols": size.width,
+    });
+    events::send(Msg::CommentRequest {
+        snap: SendSnap {
+            kind: SendKind::Comment,
+            note: String::new(),
+            send_now: false,
+            meta: DocMeta::of(doc),
+            text: doc.text().clone(),
+            selection: Some(doc.selection(view.id).clone()),
+        },
+        screen,
+    });
+}
+
+/// The terminal cells (0-based row and column from the top-left of the
+/// screen) of the primary selection's first grapheme and of its last one
+/// (not counting a final line ending), placed as the renderer places them:
+/// the view's area without its gutter, its scroll offsets, soft wrap and
+/// every virtual line `View::text_annotations` reserves (annotations, the
+/// inline diff, inline diagnostics). Cells off screen are clamped to the
+/// view.
+pub fn selection_cells(editor: &Editor) -> (serde_json::Value, serde_json::Value) {
+    use helix_core::chars::char_is_line_ending;
+    use helix_core::graphemes::prev_grapheme_boundary;
+    use helix_core::{visual_offset_from_anchor, VisualOffsetError};
+
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+    let range = doc.selection(view.id).primary();
+    let first = range.from();
+    let mut last = prev_grapheme_boundary(text, range.to()).max(first);
+    if last > first && char_is_line_ending(text.char(last)) {
+        last = prev_grapheme_boundary(text, last).max(first);
+    }
+    let inner = view.inner_area(doc);
+    let offset = doc.view_offset(view.id);
+    let format = doc.text_format(inner.width, None);
+    let annotations = view.text_annotations(doc, None);
+    let height = inner.height.max(1) as usize;
+    let width = inner.width.max(1) as usize;
+    let cell = |pos: usize| {
+        let (row, col) = match visual_offset_from_anchor(
+            text,
+            offset.anchor,
+            pos,
+            &format,
+            &annotations,
+            offset.vertical_offset + height,
+        ) {
+            Ok((p, _)) => (
+                p.row as isize - offset.vertical_offset as isize,
+                p.col as isize - offset.horizontal_offset as isize,
+            ),
+            Err(VisualOffsetError::PosBeforeAnchorRow) => (0, 0),
+            Err(VisualOffsetError::PosAfterMaxRow) => (height as isize - 1, 0),
+        };
+        let row = row.clamp(0, height as isize - 1) as usize;
+        let col = col.clamp(0, width as isize - 1) as usize;
+        serde_json::json!({ "row": inner.y as usize + row, "col": inner.x as usize + col })
+    };
+    (cell(first), cell(last))
 }
 
 fn bb_comments_send(
