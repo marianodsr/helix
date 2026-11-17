@@ -527,7 +527,7 @@ def bench(args):
         c.drain(0.2)
         for i in range(200):
             t = time.perf_counter()
-            hx.send("jj" if i % 2 else "kk", pause=0)
+            hx.send("kk" if i % 2 else "jj", pause=0)
             c.event("event/selection")
             c.event("event/selection")
             lat.append((time.perf_counter() - t) * 1000 - 50)
@@ -548,7 +548,7 @@ def bench(args):
         c.call("events/subscribe", {"events": ["selection"]})
         c.drain(0.3)
         for i in range(200):
-            hx.send("jj" if i % 2 else "kk", pause=0)
+            hx.send("kk" if i % 2 else "jj", pause=0)
             c.event("event/selection")
             c.event("event/selection")
             time.sleep(0.07)

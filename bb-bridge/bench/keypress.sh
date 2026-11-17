@@ -22,7 +22,7 @@ export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 if [ ! -d "$wt" ]; then
     git -C "$root" worktree add --detach "$wt" "$base"
 fi
-sed '/bridge:begin/,/bridge:end/d' "$here/keypress.rs" > "$wt/helix-term/tests/test/keypress_bench.rs"
+sed '/^ *\/\/ bridge:begin$/,/^ *\/\/ bridge:end$/d' "$here/keypress.rs" > "$wt/helix-term/tests/test/keypress_bench.rs"
 if ! grep -q 'mod keypress_bench;' "$wt/helix-term/tests/integration.rs"; then
     sed -i.orig 's/^    mod splits;$/    mod splits;\
     mod keypress_bench;/' "$wt/helix-term/tests/integration.rs"
@@ -31,7 +31,7 @@ fi
 bench() { # dir target-dir label
     (cd "$1" && CARGO_TARGET_DIR="$2" cargo test --release --features integration \
         -p helix-term --test integration keypress_bench -- --ignored --nocapture --test-threads=1) \
-        2>/dev/null | sed -n "s/^KEYPRESS /$3 /p"
+        | sed -n "s/^KEYPRESS /$3 /p"
 }
 
 for round in 1 2; do

@@ -638,7 +638,6 @@ impl<S: Sink> Coalescer<S> {
 
     /// Changes go out before a save or close of the same document, even
     /// inside the window, so a client never sees them in the wrong order.
-
     fn flush_change_of(&mut self, doc: DocumentId) {
         if let Some(meta) = self.changes.remove(&doc) {
             self.emit_change(meta);
