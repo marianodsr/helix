@@ -39,6 +39,17 @@ These are the acceptance criteria; everything else serves them.
    in the gutter and shows the comment, and later the agent's reply, under
    them.
 
+8. **Reviewing changes in the editor.** The same editor shows a set of
+   changes (the working tree, the thread's branch or pull request, one agent
+   turn, a commit) as a diff: a list of changed files, removed and added
+   lines drawn in place, movement from change to change. The user comments
+   on lines and sends the comments to the agent, as in requirement 3. The
+   files stay real and editable, with the language server working.
+9. **A file tree beside the editor**, using yazi, which the user already
+   has: choosing a file in the tree opens it in Helix, and the tree follows
+   the file Helix shows. This is in the bb plugin; the fork needs nothing
+   for it beyond what the bridge already offers.
+
 On "as it lands": bb does not give plugins the contents of an edit while the
 model is still generating it, only each edit when it is made. So the unit is
 one edit, revealed with an animation the moment it happens, not one token.
@@ -137,6 +148,7 @@ helix-term/src/bridge/
     interrupt.rs  idle tracking, pending jump, :bb-go           (step 2c)
     annotations.rs  annotations/*, :bb-annotations              (step 2d)
     reveal.rs     editor/reveal, the reveal animation           (step 2d)
+    review.rs     review/*, :bb-review, :bb-diff, inline diff   (step 5)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer

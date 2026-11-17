@@ -95,7 +95,7 @@ Params: `{ "client": "bb-plugin", "clientVersion": "0.1.0" }`
 
 Result: `{ "protocol": 1, "helixVersion", "pid", "cwd", "workspaceRoot",
 "capabilities": ["editor", "reload", "locations", "views", "command",
-"diagnostics", "lsp", "applyEdits", "annotations", "reveal"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
+"diagnostics", "lsp", "applyEdits", "annotations", "reveal", "review"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
 clients feature-detect on it.
 
 ### editor/state
@@ -304,6 +304,47 @@ per item. Result: `{ "count" }`.
 
 `:bb-annotations` toggles all bridge annotations on and off for the session.
 
+### review/set, review/clear, review/state
+
+Reviewing a set of changes inside the editor: the working tree, a branch
+against where it forked, one agent turn, a commit. The files stay the real,
+editable files; the review changes what they are compared against and how the
+difference is drawn.
+
+`review/set` params: `{ "id", "title", "base": { "rev": "<full commit sha>" }
+| null, "files": [{ "path", "status": "added" | "modified" | "deleted" |
+"renamed", "oldPath"?, "additions", "deletions" }], "inline"?: true,
+"open"?: false, "interrupt"? }`.
+
+- **Base.** While a review is active, every buffer of a file in that
+  repository is compared with the file as it was at `base.rev`, not at
+  `HEAD`: the diff gutter, Helix's own change navigation (`]g`, `[g`) and
+  the inline diff all follow it, and keep following it live as the user or
+  an agent edits. `base: null` means `HEAD` (uncommitted changes). The base
+  text is read from the repository by Helix, off the main thread; a `rev`
+  that the repository does not have fails with `unsupported` and
+  `data.reason`.
+- **Files.** The list the user browses with `:bb-review`. At most 5000.
+  Sending `review/set` again with the same `id` replaces the list in place
+  (the client does this as the changes grow) without moving the user.
+- **Inline diff** (`inline`, default true): removed lines are drawn as
+  virtual lines above the change, struck through, and added or changed lines
+  get a background, in the theme's diff colours. It is decoration only, like
+  annotations: nothing in the document changes, removed lines cannot be
+  selected, and annotations and the reveal animation still draw.
+- **`open`** opens the file picker at once, subject to `interrupt`.
+
+Result: `{ "files": <count>, "base": "<rev or HEAD>", "deferred": <bool> }`.
+
+`review/clear` (`{}`) ends the review: comparison goes back to `HEAD` and the
+inline diff is switched off. `review/state` (`{}`) returns `{ "active", "id",
+"title", "base", "inline", "files": <count> }`.
+
+A deleted file has no buffer to show: choosing it in the picker opens its
+text at the base in a read-only scratch buffer named `<path> (deleted)`.
+
+Capability `review`.
+
 ### diagnostics/get
 
 Params: `{ "path"?, "minSeverity"?: "hint" | "info" | "warning" | "error",
@@ -356,7 +397,7 @@ knows it. Errors: `no_language_server`, `timeout`, `not_found`.
 ### events/subscribe, events/unsubscribe
 
 Params: `{ "events": ["selection", "documents", "diagnostics", "mode",
-"send", "lsp", "externalChange"] }`. Result: `{ "subscribed": [..] }`.
+"send", "lsp", "externalChange", "review"] }`. Result: `{ "subscribed": [..] }`.
 Events arrive as notifications. With no subscriber for a kind, Helix does no
 work for it.
 
@@ -369,9 +410,10 @@ work for it.
 | `event/focus` | `{ "docId", "path" }` | kind `documents`; the focused buffer changed |
 | `event/diagnostics` | `{ "path", "errors", "warnings", "infos", "hints" }` | coalesced per path, 200 ms |
 | `event/mode` | `{ "mode" }` | |
-| `event/send` | `{ "kind": "send" \| "ask" \| "comment" \| "flush", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false }` | the user ran one of the `:bb-*` commands below; `flush` carries no ranges |
+| `event/send` | `{ "kind": "send" \| "ask" \| "comment" \| "flush", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false, "reviewId"? }` | the user ran one of the `:bb-*` commands below; `flush` carries no ranges |
 | `event/lsp` | `{ "id", "name", "state": "initialized" \| "exited" }` | |
 | `event/externalChange` | `{ "path", "modified": true }` | a file open with unsaved changes also changed on disk |
+| `event/review` | `{ "target": "<text>", "path", "docId" }` | the user ran `:bb-review <target>`; the client works out the base and the files and answers with `review/set` (or `review/clear` for `off`). `path` is the focused file, for clients that need to know which repository. |
 
 A slow client never blocks the editor: each client has a bounded outbound
 queue (1024 messages); when it overflows the oldest coalescable events are
@@ -390,6 +432,8 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 | `:bb-go` | Performs the pending jump a client requested while the user was busy. |
 | `:bb-status` | Shows the connected clients (with their subscriptions), what the bridge offers and the socket path. |
 | `:bb-annotations` | Hides or shows every bridge annotation for the session. |
+| `:bb-review [target]` | With no argument: a picker over the active review's files (status, `+n -m`, path, with the file's diff as the preview); Enter opens the file at its first change. With a target: emits `event/review`. Targets are free text for the client; the completion offers `uncommitted`, `branch`, `turn`, `commit`, `pr` and `off`. With no client subscribed to `review`, `uncommitted` and `off` still work (they need nothing from a client) and other targets fail with a status-line error. |
+| `:bb-diff` | Switches the inline diff on and off for the session, with or without a review (without one it shows uncommitted changes inline). |
 
 When no client is subscribed to `send`, the commands that emit `event/send` fail with a status-line
 error and change nothing. After emitting, Helix shows a short status message
@@ -408,6 +452,7 @@ overrides key bindings, and it reads the user's normal Helix configuration.
 enable = true          # default in this fork; false disables the socket entirely
 commands = "safe"      # what editor/command may run: "safe", "all" or "none"
 reveal = true          # animate text an agent just wrote (editor/reveal)
+inline-diff = false    # draw the inline diff from the start, against HEAD
 ```
 
 `HELIX_BRIDGE=0` in the environment also disables it.
