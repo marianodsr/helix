@@ -618,7 +618,9 @@ fn warn_external(editor: &mut Editor, paths: &[PathBuf]) {
         })
         .collect();
     editor.set_warning(match names.as_slice() {
-        [one] => format!("{one} changed on disk; your unsaved changes are kept (:reload discards them)"),
+        [one] => {
+            format!("{one} changed on disk; your unsaved changes are kept (:reload discards them)")
+        }
         many => format!(
             "{} files with unsaved changes changed on disk: {} (:reload discards your changes)",
             many.len(),

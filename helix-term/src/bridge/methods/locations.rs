@@ -582,7 +582,8 @@ fn bb_locations(
     if rows.is_empty() {
         bail!("bb locations list '{name}' is empty");
     }
-    cx.editor.set_status(format!("{title} ({} items)", rows.len()));
+    cx.editor
+        .set_status(format!("{title} ({} items)", rows.len()));
     cx.jobs.callback(async move {
         let call = move |_: &mut Editor, compositor: &mut Compositor| {
             compositor.push(Box::new(overlaid(picker(rows))));
@@ -647,7 +648,11 @@ fn show_note_here(editor: &mut Editor) {
     let text = doc.text().slice(..);
     let line = text.char_to_line(doc.selection(view.id).primary().cursor(text)) + 1;
     let mut state = STATE.lock();
-    let State { lists, active, shown } = &mut *state;
+    let State {
+        lists,
+        active,
+        shown,
+    } = &mut *state;
     let Some(list) = active
         .as_deref()
         .and_then(|name| lists.iter_mut().find(|l| l.name == name))
@@ -694,7 +699,10 @@ mod tests {
 
     #[test]
     fn status_text() {
-        let mut items = vec![item("/r/a.go", 3, Some("entry point")), item("/r/b.go", 9, None)];
+        let mut items = vec![
+            item("/r/a.go", 3, Some("entry point")),
+            item("/r/b.go", 9, None),
+        ];
         items[1].label = Some("handler".into());
         let list = List {
             name: "tour".into(),

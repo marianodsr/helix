@@ -69,8 +69,8 @@ pub fn apply_edits(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
             )));
         }
         let exists = on_disk.is_ok();
-        let applied = on_editor(move |editor, _| apply_on_main(editor, &path, exists, params))
-            .await??;
+        let applied =
+            on_editor(move |editor, _| apply_on_main(editor, &path, exists, params)).await??;
         let Applied {
             doc,
             mut result,
@@ -85,8 +85,7 @@ pub fn apply_edits(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 Err(_) => {
                     return Err(RpcError {
                         code: ErrorCode::Timeout,
-                        message: "the edits were applied; the save did not finish in time"
-                            .into(),
+                        message: "the edits were applied; the save did not finish in time".into(),
                         data: Some(json!({ "applied": true, "version": result.version })),
                     })
                 }
@@ -192,10 +191,7 @@ fn apply_on_main(
         if version != doc.version() {
             return Err(RpcError {
                 code: ErrorCode::VersionMismatch,
-                message: format!(
-                    "the buffer is at version {}, not {version}",
-                    doc.version()
-                ),
+                message: format!("the buffer is at version {}, not {version}", doc.version()),
                 data: Some(json!({ "version": doc.version() })),
             });
         }
