@@ -411,13 +411,17 @@ def stats(xs):
             "max": round(xs[-1], 3)}
 
 
-def overhead(c, params, n):
+def overhead(c, params, n, gap=0.0):
     """Round trip vs the server's own time (request handed to Helix's client
-    until its answer arrived), as the bridge measured it."""
+    until its answer arrived), as the bridge measured it. With `gap`, wait
+    that long between queries (an agent asking one thing at a time) instead
+    of sending them back to back."""
     rtt, server, issue, shape = [], [], [], []
     for _ in range(5):
         c.call("lsp/query", dict(params, timing=True))
     for _ in range(n):
+        if gap:
+            time.sleep(gap)
         t = time.perf_counter()
         r = c.call("lsp/query", dict(params, timing=True))
         rtt.append((time.perf_counter() - t) * 1000)
@@ -514,13 +518,16 @@ def big(args, Sandbox):
     repo = os.path.realpath(args.repo)
     sb = Sandbox()
     env = go_env(sb)
-    env["GOFLAGS"] = "-mod=mod"
+    env["GOFLAGS"] = ""  # the repository's own choice (vendor/ when it has one)
     from live import Hx  # noqa: E402
     target = args.file
     hx = Hx(args.hx, ["-v", target], repo, sb.env(**env))
     results = {}
     try:
-        reg = sb.registry(hx.pid)
+        reg = sb.registry(hx.pid, timeout=20)
+        if reg is None:
+            print("hx did not start:", hx.text_since()[-2000:])
+            return 1
         c = Client(reg["socket"], timeout=120)
         c.call("bridge/hello", {"client": "lspbig"})
         t0 = time.monotonic()
@@ -531,33 +538,40 @@ def big(args, Sandbox):
         # wait for the workspace load: the first query blocks until gopls is ready
         t0 = time.monotonic()
         params = json.loads(args.query)
+        params.setdefault("kind", "definition")
         params.setdefault("path", os.path.join(repo, target))
         params.setdefault("timeoutMs", 60000)
-        for _ in range(10):
+        for _ in range(20):
             try:
                 c.call("lsp/query", params)
                 break
             except RpcError as e:
                 print("first query:", e)
-                time.sleep(5)
-        print(f"first query after {time.monotonic() - t0:.1f}s")
+                time.sleep(2)
+        print(f"first query answered after {time.monotonic() - t0:.1f}s")
+
+        def show(label, r):
+            print(f"{label:<28} rtt p50 {r['rtt']['p50']:8.3f}  server p50 {r['server']['p50']:8.3f}  "
+                  f"overhead p50 {r['overhead']['p50']:.3f} p90 {r['overhead']['p90']:.3f} max {r['overhead']['max']:.3f} ms "
+                  f"(issue p50 {r['issue']['p50']:.3f}, shape p50 {r['shape']['p50']:.3f})")
+
         for kind in ("definition", "hover", "references", "implementation", "documentSymbols"):
             p = dict(params, kind=kind)
             if kind == "documentSymbols":
                 p.pop("position", None)
-            try:
-                r = overhead(c, p, args.n)
-            except RpcError as e:
-                print(kind, "failed:", e)
-                continue
-            results[kind] = r
-            print(f"{kind:<16} rtt p50 {r['rtt']['p50']:8.3f}  server p50 {r['server']['p50']:8.3f}  "
-                  f"overhead p50 {r['overhead']['p50']:.3f} p90 {r['overhead']['p90']:.3f} max {r['overhead']['max']:.3f} ms")
+            for gap in (0.0, 0.1):
+                label = kind + (" (100 ms apart)" if gap else " (back to back)")
+                try:
+                    r = overhead(c, p, args.n, gap)
+                except RpcError as e:
+                    print(kind, "failed:", e)
+                    continue
+                results[label] = r
+                show(label, r)
         p = {"kind": "workspaceSymbols", "query": args.symbol, "path": params["path"], "timeoutMs": 60000}
-        r = overhead(c, p, max(5, args.n // 4))
-        results["workspaceSymbols"] = r
-        print(f"{'workspaceSymbols':<16} rtt p50 {r['rtt']['p50']:8.3f}  server p50 {r['server']['p50']:8.3f}  "
-              f"overhead p50 {r['overhead']['p50']:.3f} p90 {r['overhead']['p90']:.3f} max {r['overhead']['max']:.3f} ms")
+        r = overhead(c, p, max(5, args.n // 4), 0.1)
+        results["workspaceSymbols (100 ms apart)"] = r
+        show("workspaceSymbols (100 ms apart)", r)
         d = c.call("diagnostics/get", {"limit": 0})
         print("diagnostics:", d)
         xs = []
