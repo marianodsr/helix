@@ -76,20 +76,27 @@ sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 # Sets release_url to the archive of the latest release for $TARGET, or
 # empty and release_why to the reason.
+#
+# The latest release is found from the redirect of the releases/latest page,
+# not from api.github.com: the API allows 60 anonymous requests an hour per
+# address and answers 403 beyond that, which turned an ordinary install into
+# a source build. release.sh names the archive after the tag
+# (<tag>-<target>.tar.gz), so the tag is all that is needed.
 find_release() {
     release_url=""
-    api=https://api.github.com/repos/$REPO/releases/latest
-    code=$(curl -sSL -o "$work/release.json" -w '%{http_code}' \
-        -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null) || code=000
-    case $code in
-        200) ;;
-        404) release_why="$REPO has no release yet"; return 0 ;;
-        000) release_why="cannot reach api.github.com"; return 0 ;;
-        *) release_why="api.github.com answered $code"; return 0 ;;
+    latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$REPO/releases/latest" 2>/dev/null) || {
+        release_why="cannot reach github.com"; return 0; }
+    case $latest in
+        */releases/tag/*) tag=${latest##*/releases/tag/} ;;
+        *) release_why="$REPO has no release yet"; return 0 ;;
     esac
-    release_url=$(sed -n 's/.*"browser_download_url": *"\([^"]*-'"$TARGET"'\.tar\.gz\)".*/\1/p' \
-        "$work/release.json" | head -n 1)
-    release_why="the latest release of $REPO has no $TARGET archive"
+    url=https://github.com/$REPO/releases/download/$tag/$tag-$TARGET.tar.gz
+    if curl -fsSIL -o /dev/null "$url" 2>/dev/null; then
+        release_url=$url
+    else
+        release_why="the latest release of $REPO ($tag) has no $TARGET archive"
+    fi
 }
 
 download_release() {
