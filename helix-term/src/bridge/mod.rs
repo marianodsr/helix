@@ -110,7 +110,7 @@ pub fn start(editor: &Editor) {
     let pid = std::process::id();
     let info = Info {
         pid,
-        socket: dir.join(format!("{pid}.sock")),
+        socket: socket_path_for(&dir, pid),
         registry: dir.join(format!("{pid}.json")),
         cwd: helix_stdx::env::current_working_dir(),
         workspace_root: helix_loader::find_workspace().0,
@@ -130,6 +130,21 @@ pub fn start(editor: &Editor) {
     let task = tokio::spawn(server::listen(dir, shared.clone()));
     shared.track(task.abort_handle());
     log::info!("bridge: started in {:?}", begin.elapsed());
+}
+
+/// Socket paths are limited to 104 bytes on macOS (108 on Linux).
+const MAX_SOCKET_PATH: usize = 100;
+
+/// `<dir>/<pid>.sock`, or `/tmp/helix-bridge-<uid>/<pid>.sock` when that
+/// would be too long. The registry file always names the one in use.
+fn socket_path_for(dir: &std::path::Path, pid: u32) -> PathBuf {
+    let socket = dir.join(format!("{pid}.sock"));
+    if socket.as_os_str().len() <= MAX_SOCKET_PATH {
+        return socket;
+    }
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/helix-bridge-{uid}/{pid}.sock"))
 }
 
 /// `[editor.bridge] enable`, overridden off by `HELIX_BRIDGE=0`.
@@ -180,7 +195,22 @@ pub fn socket_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::enabled;
+    use super::{enabled, socket_path_for};
+    use std::path::Path;
+
+    #[test]
+    fn long_socket_paths_fall_back_to_tmp() {
+        let short = socket_path_for(Path::new("/home/me/.cache/helix/bridge"), 42);
+        assert_eq!(short, Path::new("/home/me/.cache/helix/bridge/42.sock"));
+        let deep = format!(
+            "/home/me/{}/helix/bridge",
+            "very-long-directory-name/".repeat(4)
+        );
+        let long = socket_path_for(Path::new(&deep), 42);
+        // SAFETY: no preconditions.
+        let uid = unsafe { libc::getuid() };
+        assert_eq!(long, Path::new(&format!("/tmp/helix-bridge-{uid}/42.sock")));
+    }
     use helix_view::editor::{BridgeCommandPolicy, Config};
 
     #[test]

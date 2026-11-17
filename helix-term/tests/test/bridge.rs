@@ -29,6 +29,7 @@ const WAIT: Duration = Duration::from_secs(5);
 pub struct Bridge {
     pub app: Application,
     pub socket: PathBuf,
+    registry: PathBuf,
     pub dir: tempfile::TempDir,
     keys: Keys,
     stream: UnboundedReceiverStream<std::io::Result<Event>>,
@@ -67,13 +68,24 @@ impl Bridge {
 
     pub fn start_in(builder: AppBuilder, dir: tempfile::TempDir) -> anyhow::Result<Bridge> {
         let bridge_dir = dir.path().join("bridge");
+        Self::start_at(builder, dir, bridge_dir)
+    }
+
+    pub fn start_at(
+        builder: AppBuilder,
+        dir: tempfile::TempDir,
+        bridge_dir: PathBuf,
+    ) -> anyhow::Result<Bridge> {
         helix_term::bridge::set_test_dir(bridge_dir.clone());
         let app = builder.build()?;
-        let socket = bridge_dir.join(format!("{}.sock", std::process::id()));
+        let pid = std::process::id();
+        let socket = helix_term::bridge::socket_path()
+            .unwrap_or_else(|| bridge_dir.join(format!("{pid}.sock")));
         let (tx, rx) = unbounded_channel();
         Ok(Bridge {
             app,
             socket,
+            registry: bridge_dir.join(format!("{pid}.json")),
             dir,
             keys: Keys(tx),
             stream: UnboundedReceiverStream::new(rx),
@@ -81,7 +93,7 @@ impl Bridge {
     }
 
     pub fn registry(&self) -> PathBuf {
-        self.socket.with_extension("json")
+        self.registry.clone()
     }
 
     /// Run the editor's main loop while `f` drives it from outside.
@@ -316,6 +328,36 @@ async fn stale_socket_from_same_pid_is_replaced() -> anyhow::Result<()> {
     let reg: Value = serde_json::from_slice(&std::fs::read(bridge.registry())?)?;
     assert_eq!(reg["protocol"], 1, "registry rewritten");
     bridge.finish().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn long_cache_path_puts_the_socket_in_tmp() -> anyhow::Result<()> {
+    let dir = bridge_dir()?;
+    let bridge_dir = dir
+        .path()
+        .join("a-cache-directory-with-a-long-name/".repeat(3))
+        .join("helix/bridge");
+    let mut bridge = Bridge::start_at(AppBuilder::new(), dir, bridge_dir)?;
+    let registry = bridge.registry();
+    let socket = bridge.socket.clone();
+    assert!(
+        socket.to_string_lossy().starts_with("/tmp/helix-bridge-"),
+        "fallback socket: {socket:?}"
+    );
+    let hello = bridge
+        .run(|_, socket| async move { Client::connect(&socket).await?.hello("long").await })
+        .await?;
+    assert_eq!(hello["protocol"], 1);
+    let reg: Value = serde_json::from_slice(&std::fs::read(&registry)?)?;
+    assert_eq!(reg["socket"], socket.to_string_lossy().as_ref());
+    let parent = socket.parent().unwrap();
+    assert_eq!(
+        std::fs::metadata(parent)?.permissions().mode() & 0o777,
+        0o700
+    );
+    bridge.finish().await?;
+    assert!(!socket.exists() && !registry.exists());
     Ok(())
 }
 

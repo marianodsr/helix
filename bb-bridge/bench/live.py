@@ -188,8 +188,8 @@ class Sandbox:
         proc = Hx(hx, list(args) + list(files), self.repo, self.env(**env))
         return proc
 
-    def registry(self, pid, timeout=5.0):
-        path = os.path.join(self.bridge, f"{pid}.json")
+    def registry(self, pid, timeout=5.0, bridge=None):
+        path = os.path.join(bridge or self.bridge, f"{pid}.json")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if os.path.exists(path):
@@ -320,6 +320,9 @@ def _verify(args, sb, hx, check):
     hx.send("x:bb-send look here" + ENTER)
     ev = a.event("event/send")
     check(ev["kind"] == "send" and ev["note"] == "look here" and ev["ranges"][0]["text"].endswith("\n"), ":bb-send", ev)
+    r = ev["ranges"][0]
+    check(r["start"]["col"] == 1 and r["end"] == pos(r["start"]["line"] + 1, 1),
+          "line-wise selection ends at column 1 of the next line", r)
     hx.send(":bb-send!" + ENTER)
     check(a.event("event/send")["sendNow"] is True, ":bb-send!")
     hx.send(":bb-ask what does this do?" + ENTER)
@@ -349,17 +352,18 @@ def _verify(args, sb, hx, check):
     hx.send(" bi")
     check(hx.wait_text("2 clients", m), ":bb-status shows two clients")
 
-    # selection latency after the 50 ms window (upper bound: key write -> event)
+    # an isolated move is reported at once (leading edge): key write -> event
     a.drain(0.2)
     lat = []
     for i in range(30):
         t = time.perf_counter()
         hx.send("j" if i % 2 else "k", pause=0)
         a.event("event/selection")
-        lat.append((time.perf_counter() - t) * 1000 - 50)
+        lat.append((time.perf_counter() - t) * 1000)
         time.sleep(0.12)
     lat.sort()
-    print(f"INFO selection latency after window: p50={lat[len(lat)//2]:.2f}ms max={lat[-1]:.2f}ms")
+    print(f"INFO key -> event/selection, isolated move: p50={lat[len(lat)//2]:.2f}ms max={lat[-1]:.2f}ms")
+    check(lat[len(lat) // 2] < 5, "isolated move reported within 5 ms (p50)")
 
     # a client that stops reading: selection events overflow, it stays
     # move steadily down the big file: every 50 ms window ends somewhere new
@@ -421,6 +425,23 @@ def _verify(args, sb, hx, check):
     check(hx.wait_exit(), "hx exits")
     check(not os.path.exists(reg["socket"]) and not os.path.exists(os.path.join(sb.bridge, f"{hx.pid}.json")),
           "socket and registry removed on exit")
+
+    # a cache path too long for a socket: the socket moves to /tmp
+    sb3 = Sandbox()
+    long_cache = os.path.join(sb3.root, "a-long-cache-directory-name/" * 3)
+    h3 = sb3.start(args.hx, XDG_CACHE_HOME=long_cache)
+    try:
+        reg3 = sb3.registry(h3.pid, bridge=os.path.join(long_cache, "helix", "bridge"))
+        ok = reg3 is not None and reg3["socket"] == f"/tmp/helix-bridge-{os.getuid()}/{h3.pid}.sock"
+        check(ok, "long XDG_CACHE_HOME: socket in /tmp/helix-bridge-<uid>", reg3)
+        if ok:
+            check(Client(reg3["socket"]).call("bridge/hello")["pid"] == h3.pid, "long XDG_CACHE_HOME: connect")
+            check(oct(os.stat(os.path.dirname(reg3["socket"])).st_mode & 0o777) == "0o700", "fallback directory is 0700")
+        h3.send(":qa!" + ENTER)
+        check(h3.wait_exit() and reg3 and not os.path.exists(reg3["socket"]), "long XDG_CACHE_HOME: socket removed on exit")
+    finally:
+        h3.kill()
+        sb3.cleanup()
 
     # off switches
     for label, env, extra in (("HELIX_BRIDGE=0", {"HELIX_BRIDGE": "0"}, ""), ("enable = false", {}, "[editor.bridge]\nenable = false\n")):
@@ -485,19 +506,33 @@ def bench(args):
             results[label] = r
             print(fmt(r))
 
+        def stats(xs):
+            xs.sort()
+            return {"n": len(xs), "p50": round(xs[len(xs) // 2], 3), "p90": round(xs[int(len(xs) * 0.9)], 3),
+                    "p99": round(xs[int(len(xs) * 0.99) - 1], 3), "max": round(xs[-1], 3)}
+
+        # isolated move: sent at once (leading edge); key write -> event
         lat = []
         c.drain(0.2)
         for i in range(200):
             t = time.perf_counter()
             hx.send("j" if i % 2 else "k", pause=0)
             c.event("event/selection")
+            lat.append((time.perf_counter() - t) * 1000)
+            time.sleep(0.12)
+        results["selection_isolated_key_to_event_ms"] = stats(lat)
+        # burst of two: the second waits for the window; key write -> second
+        # event, minus the 50 ms window (an upper bound on the lateness)
+        lat = []
+        c.drain(0.2)
+        for i in range(200):
+            t = time.perf_counter()
+            hx.send("jj" if i % 2 else "kk", pause=0)
+            c.event("event/selection")
+            c.event("event/selection")
             lat.append((time.perf_counter() - t) * 1000 - 50)
             time.sleep(0.12)
-        lat.sort()
-        results["selection_latency_after_window_ms"] = {
-            "n": len(lat), "p50": lat[len(lat) // 2], "p90": lat[int(len(lat) * 0.9)],
-            "p99": lat[int(len(lat) * 0.99) - 1], "max": lat[-1],
-        }
+        results["selection_burst_after_window_ms"] = stats(lat)
         hx.send(":qa!" + ENTER)
         hx.wait_exit()
     finally:
@@ -513,7 +548,8 @@ def bench(args):
         c.call("events/subscribe", {"events": ["selection"]})
         c.drain(0.3)
         for i in range(200):
-            hx.send("j" if i % 2 else "k", pause=0)
+            hx.send("jj" if i % 2 else "kk", pause=0)
+            c.event("event/selection")
             c.event("event/selection")
             time.sleep(0.07)
         hx.send(":qa!" + ENTER)

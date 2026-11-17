@@ -75,12 +75,29 @@ pub async fn listen(dir: PathBuf, shared: Arc<Shared>) {
 }
 
 fn bind(dir: &Path, socket: &Path) -> std::io::Result<UnixListener> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    if let Some(parent) = socket.parent().filter(|p| *p != dir) {
+        // The short fallback under /tmp: shared ground, so it must be ours
+        // and private, or we do not use it.
+        match std::fs::DirBuilder::new().mode(0o700).create(parent) {
+            Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => return Err(err),
+            _ => {}
+        }
+        let meta = std::fs::symlink_metadata(parent)?;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o777 != 0o700 {
+            return Err(std::io::Error::other(format!(
+                "{} must be a directory owned by uid {uid} with mode 0700",
+                parent.display()
+            )));
+        }
+    }
     // The pid is ours, so anything already there was left by a process that
     // died without cleaning up.
     match std::fs::remove_file(socket) {
