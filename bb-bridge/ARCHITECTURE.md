@@ -204,9 +204,10 @@ off screen removes it (under line 37: 1.3 ms); under the last visible line,
 or off screen, it does not (7.1 and 5.7 ms). The likely cause is the cursor
 settling Go's quantified doc-comment pattern at the end of its range by
 walking the following top-level nodes. So it is an avoidable cost in the
-normal path, upstream's and ours, not a bug of the bridge: a highlighter
-that stops before exhausting its range, or a query range that ends inside
-the last line, would save it. Not changed here.
+normal path, upstream's and ours, not a bug of the bridge. Fixed since by
+giving the highlighter a range one screen past the view (UPSTREAM_TOUCHPOINTS.md,
+"Syntax highlighter range"): Go moves are now 1.7 / 2.2 / 2.5 ms against
+2.4 / 2.1 / 2.9 ms in Homebrew's 25.07.
 
 `bb-bridge/bench/` holds the tools that produce these numbers: a small Rust
 or Python client that measures round trips, and an editor benchmark that

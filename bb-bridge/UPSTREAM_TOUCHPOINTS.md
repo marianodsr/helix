@@ -33,7 +33,7 @@ git diff 49986e667 -U0 -- helix-term helix-view helix-lsp Cargo.lock \
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
 | `helix-term/src/ui/mod.rs` | 2, 16 | `mod document` and `mod text_decorations` become `pub(crate)` (step 2d) | The bridge draws annotations as a `Decoration` with `TextRenderer`, the same mechanism inline diagnostics use. |
 | `helix-term/src/ui/editor.rs` | 208 | `crate::bridge::decorate(..)` just before `render_document` in `render_view` (step 2d) | Draws gutter signs, line backgrounds, the annotations' rows and the reveal; after every other decoration, so its virtual lines stack in the order `text_annotations` reserved them. Returns at once when the document has none. |
-| `helix-term/src/ui/editor.rs` | 1594 | `crate::bridge::focus_gained(context.editor);` in the `Event::FocusGained` arm (step 2a) | There is no editor event for the terminal regaining focus; this arm is where Helix already handles it (focus events reach the editor view under pickers and prompts, which ignore them). The bridge only copies ids there and stats files on a blocking thread. |
+| `helix-term/src/ui/editor.rs` | 1599 | `crate::bridge::focus_gained(context.editor);` in the `Event::FocusGained` arm (step 2a) | There is no editor event for the terminal regaining focus; this arm is where Helix already handles it (focus events reach the editor view under pickers and prompts, which ignore them). The bridge only copies ids there and stats files on a blocking thread. |
 | `helix-term/tests/integration.rs` | 19–34, 37–39 | `mod bridge;`, `bridge_annotations`, `bridge_buffers`, `bridge_command`, `bridge_files`, `bridge_lsp`, `bridge_review` and the key-press benchmark module, each `#[cfg(unix)]`; `bridge_watch` `#[cfg(target_os = "macos")]` | The bridge's integration tests (step 1, 2d, 2a, 2c, `:bb-files`, 2b, the review, the watch) and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
 | `helix-view/src/editor.rs` | 438–439 | `pub bridge: BridgeConfig` field in `Config` | `[editor.bridge]`; `Config` denies unknown fields, so the section must be declared here. |
 | `helix-view/src/editor.rs` | 1221 | `bridge: BridgeConfig::default()` | Default of the field above. |
@@ -119,6 +119,59 @@ state per line). Check: `python3 bb-bridge/bench/move_latency.py --check 10`
 with upstream's query passes. Not reported upstream yet. #15619 ("A large
 number of commented lines causes terrible lags") predates #15377 and is a
 related but different case.
+
+### Syntax highlighter range: one screen past the view
+
+| File | Lines | Change |
+|---|---|---|
+| `helix-term/src/ui/editor.rs` | 307–312 | `doc_syntax_highlighter` asks for the byte range of twice the view's height (`height.saturating_mul(2)`) instead of the view's. |
+
+**Symptom.** After the doc-comment fix above, a cursor move on
+`net/http/server.go` still took 5.2–5.9 ms from key to output against
+2.1–2.9 ms in Homebrew `hx` 25.07 (`move_latency.py`, p50 at 53 / 100 /
+140 columns).
+
+**Cause.** The highlighter's range was exactly the lines that fit the
+view, and drawing reaches the last of them. When the frame needs the
+next highlight event after the last capture in its range, tree-sitter's
+query cursor first has to settle every match still open, and the
+doc-comment pattern is rooted at `source_file`, so that walks the
+following top-level nodes of the whole file: about 5 ms of each frame.
+Shown three ways: removing only that pattern (6.2 → 1.9 ms); a `sample`
+profile with nearly all frame time in `ts_query_cursor__advance` under
+`Highlighter::advance` in `render_document`; and any virtual line (an
+annotation, a removed line of the inline diff) that pushes the view's last
+line off screen making the frame cheap (6.4 → 1.3 ms), while one under
+the last line, or off screen, does not (7.1, 5.7 ms). Rewriting the pattern
+without the `source_file` root (sibling patterns) only halved the cost
+(3.1 ms) and needs a second pattern to stay identical inside function
+bodies, so the fix is in how Helix drives the highlighter instead.
+
+**Fix.** With the range one screen longer, drawing stops at the bottom of
+the view while the highlighter still has captures ahead in its range, so
+it never runs dry and the walk does not happen. The highlighter is lazy:
+it computes events only as drawing asks for them, so the longer range
+costs nothing more. Every match that touches the visible lines intersects
+the old range too, so they are highlighted the same. Checked with
+`screen_dump.py` on all of `server.go` against the build without the
+change: 74 screens at 140×60 and 114 at 100×40, byte-identical.
+`cargo xtask query-check go` and `highlight-check go` pass (queries
+unchanged). The picker's preview uses the same function and gains the
+same. In a file with no capture in the screen after the view the walk
+still happens, as before.
+
+| key to end of output, p50 | 53 cols | 100 cols | 140 cols |
+|---|---|---|---|
+| Go `server.go`: Homebrew `hx` 25.07 | 2.44 ms | 2.13 | 2.94 |
+| Go: fork before | 5.43–5.91 | 5.20–5.75 | 5.73–5.75 |
+| Go: fork with this fix | 1.72 | 2.16 | 2.45 |
+| TypeScript (3,059-line `server.ts`): Homebrew 25.07 | 2.78 | 2.84 | 3.09 |
+| TypeScript: fork before | 2.27 | 2.46 | 2.46 |
+| TypeScript: fork with this fix | 2.16 | 2.41 | 2.65 |
+
+(80 moves per row, load 1.4–1.7, 2026-11-17.) Upstream has it when
+`doc_syntax_highlighter` no longer bounds the range by the view's height,
+or when tree-sitter stops settling open matches past a range's end.
 
 ## Against the plugin-system branch
 

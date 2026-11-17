@@ -304,7 +304,12 @@ impl EditorView {
         let syntax = doc.syntax()?;
         let text = doc.text().slice(..);
         let row = text.char_to_line(anchor.min(text.len_chars()));
-        let range = Self::viewport_byte_range(text, row, height);
+        // One screen past the view (fork fix, see bb-bridge/UPSTREAM_TOUCHPOINTS.md):
+        // drawing then stops at the bottom of the view before the highlighter
+        // runs out of captures in its range, which for patterns rooted at the
+        // root node (Go's doc comments) makes tree-sitter walk the rest of the
+        // file on every frame. The visible lines are highlighted the same.
+        let range = Self::viewport_byte_range(text, row, height.saturating_mul(2));
         let range = range.start as u32..range.end as u32;
 
         let highlighter = syntax.highlighter(text, loader, range);
