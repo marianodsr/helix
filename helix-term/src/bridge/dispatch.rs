@@ -41,9 +41,8 @@ const METHODS: &[(&str, Handler)] = &[
     ("view/close", views::close),
     ("editor/select", views::select),
     ("editor/command", command::command),
-    // step 3
-    ("annotations/set", annotations::set),
     // step 2d
+    ("annotations/set", annotations::set),
     ("annotations/clear", annotations::clear),
     ("editor/reveal", reveal::reveal),
 ];
@@ -98,11 +97,6 @@ where
             "the editor did not answer in time",
         )),
     }
-}
-
-/// Handler for a method a later step implements.
-pub fn not_implemented(method: &'static str) -> BoxFuture<'static, RpcResult> {
-    Box::pin(async move { Err(RpcError::method_not_found(method)) })
 }
 
 #[cfg(test)]

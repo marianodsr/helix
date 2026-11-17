@@ -47,6 +47,12 @@ impl Keys {
         }
         Ok(())
     }
+
+    /// Send a terminal event other than a key press (focus, resize).
+    pub fn event(&self, event: Event) -> anyhow::Result<()> {
+        self.0.send(Ok(event))?;
+        Ok(())
+    }
 }
 
 /// A short directory: socket paths are limited to about 100 bytes.
@@ -557,13 +563,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
             assert!(r["result"]["mode"].is_string());
 
             assert_eq!(c.error("no/such", json!({})).await?["code"], -32601);
-            for stub in [
-                "editor/reload",
-                "locations/set",
-                "editor/applyEdits",
-            ] {
-                assert_eq!(c.error(stub, json!({})).await?["code"], -32601, "{stub}");
-            }
             assert_eq!(c.error("editor/state", json!([1])).await?["code"], -32602);
             let err = c
                 .error(

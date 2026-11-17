@@ -21,6 +21,8 @@ mod test {
     #[cfg(unix)]
     mod bridge_annotations;
     #[cfg(unix)]
+    mod bridge_buffers;
+    #[cfg(unix)]
     mod bridge_command;
     #[cfg(unix)]
     mod bridge_lsp;

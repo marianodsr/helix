@@ -76,6 +76,9 @@ upstream adds a command nobody has classified.
 | `bb-comment` |  | refused: sends a message to bb in the user's name |
 | `bb-comments-send` |  | refused: sends a message to bb in the user's name |
 | `bb-go` |  | allowed |
+| `bb-locations` |  | allowed |
+| `bb-next` |  | allowed |
+| `bb-prev` |  | allowed |
 | `bb-send` |  | refused: sends a message to bb in the user's name |
 | `bb-send!` |  | refused: sends a message to bb in the user's name |
 | `bb-status` |  | allowed |

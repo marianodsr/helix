@@ -167,6 +167,11 @@ pub fn document_saved(editor: &Editor, doc: DocumentId) {
     events::document_saved(editor, doc);
 }
 
+/// The terminal regained focus: reload buffers changed on disk meanwhile.
+pub fn focus_gained(editor: &mut Editor) {
+    methods::reload::focus_gained(editor);
+}
+
 /// A language server published diagnostics for `uri`, open or not.
 pub fn diagnostics_published(uri: &helix_core::Uri) {
     methods::diagnostics::published(uri);

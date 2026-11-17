@@ -18,6 +18,9 @@ pub fn decorate<'d>(
     _decorations: &mut crate::ui::text_decorations::DecorationManager<'d>,
 ) {
 }
+
+pub fn focus_gained(_editor: &mut Editor) {}
+
 pub fn diagnostics_published(_uri: &helix_core::Uri) {}
 
 pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {

@@ -280,6 +280,8 @@ two
         // col past the end of line 1 clamps before "\r\n"
         assert_eq!(char_from_pos(s, p(1, 99)), 2);
         assert_eq!(char_from_pos(s, p(2, 2)), 5);
+        // "to the end of the line" is usize::MAX; it must not overflow
+        assert_eq!(char_from_pos(s, p(2, usize::MAX)), 6);
     }
 
     #[test]

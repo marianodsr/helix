@@ -28,6 +28,7 @@ pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
 /// Hooks of the later-step modules, registered when the bridge starts.
 pub fn register_hooks() {
     reload::register_hooks();
+    locations::register_hooks();
     diagnostics::register_hooks();
     lsp::register_hooks();
     interrupt::register_hooks();
