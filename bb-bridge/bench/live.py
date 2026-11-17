@@ -420,7 +420,7 @@ def _verify(args, sb, hx, check):
     raw = Client(reg["socket"])
     raw.send_raw("{oops")
     check(raw.read()["error"]["code"] == -32700, "parse error")
-    check(raw.request("annotations/set", {})["error"]["code"] == -32601, "stub method: method_not_found")
+    check(raw.request("no/such/method", {})["error"]["code"] == -32601, "unknown method: method_not_found")
     id = raw.send("editor/state")
     raw.notify("$/cancel", {"id": id})
     r = raw.response(id)
