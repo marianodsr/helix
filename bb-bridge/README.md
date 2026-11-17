@@ -9,6 +9,7 @@ side is the Helix Bridge plugin in github.com/marianodsr/bb-plugins.
 
 | Document | |
 |---|---|
+| [SETUP_ON_A_NEW_MAC.md](SETUP_ON_A_NEW_MAC.md) | step-by-step setup on a new machine, written for an agent |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | how it fits together, and why |
 | [PROTOCOL.md](PROTOCOL.md) | the socket protocol (version 1) |
 | [COMMAND_POLICY.md](COMMAND_POLICY.md) | what an agent may run in the editor |
