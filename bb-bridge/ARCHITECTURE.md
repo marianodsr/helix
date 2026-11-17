@@ -33,6 +33,16 @@ These are the acceptance criteria; everything else serves them.
    that it has full control: anything the user can do from the keyboard, it
    can do through the bridge.
 
+6. **Watching the agent write.** Text an agent writes appears in the editor
+   as it lands, shown as if typed, without the user reloading anything.
+7. **Comments are visible in the code.** Leaving a comment marks the lines
+   in the gutter and shows the comment, and later the agent's reply, under
+   them.
+
+On "as it lands": bb does not give plugins the contents of an edit while the
+model is still generating it, only each edit when it is made. So the unit is
+one edit, revealed with an animation the moment it happens, not one token.
+
 On the file tree: upstream Helix has a built-in file explorer picker
 (`space e`) but no plugin system; that is still an open pull request
 (helix-editor/helix#8675, branch `steel-event-system` of mattwparas/helix).
@@ -125,12 +135,15 @@ helix-term/src/bridge/
     views.rs      view/*, editor/select                         (step 2c)
     command.rs    editor/command, command policy                (step 2c)
     interrupt.rs  idle tracking, pending jump, :bb-go           (step 2c)
-    annotations.rs  annotations/set                             (step 3)
+    annotations.rs  annotations/*, :bb-annotations              (step 2d)
+    reveal.rs     editor/reveal, the reveal animation           (step 2d)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer
-`method_not_found` and are absent from `capabilities`. Steps 2a, 2b and 2c
-then touch disjoint files and can run in parallel worktrees. In step 1,
+`method_not_found` and are absent from `capabilities`. Steps 2a, 2b, 2c and
+2d then touch disjoint files and can run in parallel worktrees. `reveal.rs`
+is new in 2d. After the merge, `editor/reload` with `reveal` calls into it
+with the ranges its own diff produced. In step 1,
 `editor/open` accepts `interrupt`, `viewId` and `note` but always moves at
 once; step 2c adds the waiting behaviour for every focus-moving method.
 
