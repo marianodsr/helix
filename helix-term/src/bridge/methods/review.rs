@@ -204,7 +204,7 @@ runtime_local! {
     /// One rebase at a time, in the order they were asked for.
     static REBASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     /// The scratch buffer showing each deleted file, to reuse it.
-    static DELETED: Mutex<HashMap<PathBuf, DocumentId>> = Mutex::new(HashMap::new());
+    static DELETED: Mutex<Vec<(PathBuf, DocumentId)>> = Mutex::new(Vec::new());
 }
 
 /// `[editor.bridge] inline-diff`: the inline diff's state at start. Called
@@ -1255,7 +1255,11 @@ fn open_deleted(editor: &mut Editor, path: &Path, bytes: &[u8], action: Action) 
         "{} (deleted): its text at the review's base, not a file",
         helix_stdx::path::get_relative_path(path).display()
     );
-    let open = DELETED.lock().get(path).copied();
+    let open = DELETED
+        .lock()
+        .iter()
+        .find(|(p, _)| p == path)
+        .map(|(_, id)| *id);
     if let Some(id) = open.filter(|id| editor.document(*id).is_some()) {
         editor.switch(id, action);
         editor.set_status(notice);
@@ -1283,7 +1287,9 @@ fn open_deleted(editor: &mut Editor, path: &Path, bytes: &[u8], action: Action) 
     doc.set_language(language, &loader);
     doc.readonly = true;
     doc.set_selection(view.id, Selection::point(0));
-    DELETED.lock().insert(path.to_path_buf(), doc.id());
+    let mut deleted = DELETED.lock();
+    deleted.retain(|(p, _)| p != path);
+    deleted.push((path.to_path_buf(), doc.id()));
     editor.set_status(notice);
 }
 
