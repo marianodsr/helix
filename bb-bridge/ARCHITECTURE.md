@@ -191,6 +191,23 @@ Homebrew's Helix 25.07; TypeScript (a 3,059-line `server.ts`) 2.5 / 2.5 /
 no client). The base commit was not measured here (the benchmark's build of
 it is the integration-test one, which has no terminal).
 
+Why frames are cheaper with virtual lines on screen (removed lines of the
+inline diff, annotations), checked 2026-11-17 on that Go file at 100
+columns: the highlighting is the same (every visible line coloured alike,
+compared frame by frame), so nothing is skipped. The cost is where the
+frame reaches the end of the highlighter's byte range, which covers exactly
+the lines that fit the view: drawing the last of those lines costs about
+5 ms (6.4 ms a move against 1.4 ms), in tree-sitter's query cursor
+(`ts_query_cursor__advance`, from `Highlighter::advance` in
+`render_document`, per `sample`). One annotation that pushes the last line
+off screen removes it (under line 37: 1.3 ms); under the last visible line,
+or off screen, it does not (7.1 and 5.7 ms). The likely cause is the cursor
+settling Go's quantified doc-comment pattern at the end of its range by
+walking the following top-level nodes. So it is an avoidable cost in the
+normal path, upstream's and ours, not a bug of the bridge: a highlighter
+that stops before exhausting its range, or a query range that ends inside
+the last line, would save it. Not changed here.
+
 `bb-bridge/bench/` holds the tools that produce these numbers: a small Rust
 or Python client that measures round trips, and an editor benchmark that
 replays a fixed key sequence over a large Go file in the integration harness

@@ -344,8 +344,11 @@ should know about.
   graphemes are drawn as a Braille blank (U+2800) instead and wide ones show
   at once. Whitespace is never covered. A visual line whose text is all
   still covered is drawn blank, so its indent guides, soft-wrap indicator
-  and any inlay hints do not show before its text; the cursor, selection
-  and cursorline backgrounds stay.
+  and any inlay hints do not show before its text; on a line partly
+  uncovered the covered cells are blanked too (drawn in the theme's
+  background colour they would show on a line with a background of its
+  own, such as an added line of the inline diff). The cursor, selection,
+  cursorline and diff backgrounds stay.
 - `removed`: `line` is the line of the current text the removed text was
   above; the rows show under the line before it (under line 1 when
   `line` is 1). Text with newlines is several rows. Rows are not wrapped
