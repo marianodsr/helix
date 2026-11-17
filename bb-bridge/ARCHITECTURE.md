@@ -144,7 +144,8 @@ Measured on this machine (M1 Pro), release build, with one subscribed client.
 | Key-press handling with a client subscribed to everything | under 2% slower in the bench below |
 | `editor/state` round trip | p50 under 1 ms, p99 under 5 ms |
 | `editor/open` of an already-open file | p50 under 3 ms |
-| `event/selection` latency after the debounce window | under 5 ms |
+| `event/selection` for a single move (leading edge) | p50 under 2 ms |
+| `event/selection` trailing flush of a burst | late by under 10 ms at p99 (macOS coalesces timers; measured 6 ms) |
 | Startup cost of the bridge | under 2 ms, off the first-frame path |
 | `lsp/query` overhead above the server's own time | under 3 ms |
 | Memory with an idle client | under 1 MiB |

@@ -5,6 +5,12 @@ a running Helix. Helix is the server. This file is the contract: the Rust side
 and the plugin side are built against it independently, so change it here
 first, bump nothing silently, and keep it exact.
 
+`PROTOCOL_NOTES.md` beside this file records how the implementation reads the
+points this document leaves open (for example: selection events are throttled
+with a leading edge; `languageId` is Helix's language name; `viewId` is null
+for a background open; a `%` in an inline command note is Helix expansion
+syntax). Those notes are part of the contract.
+
 ## Transport
 
 - One Unix domain socket per Helix process:
