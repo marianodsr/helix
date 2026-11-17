@@ -35,7 +35,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::bridge::convert::resolve_path;
+use crate::bridge::convert::{open_path, resolve_path};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::protocol::{parse_params, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
@@ -240,6 +240,7 @@ fn set_on_main(
     on_disk: bool,
     params: SetParams,
 ) -> Result<usize, RpcError> {
+    let path = &open_path(editor, path);
     if let Some(id) = editor.document_id_by_path(path) {
         let doc = doc_mut!(editor, &id);
         return Ok(set_on_doc(doc, &params.namespace, &params.items));
@@ -279,7 +280,10 @@ pub fn clear(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 files.retain(|_, list| !list.is_empty());
             }
             let ids: Vec<_> = match &path {
-                Some(path) => editor.document_id_by_path(path).into_iter().collect(),
+                Some(path) => editor
+                    .document_id_by_path(&open_path(editor, path))
+                    .into_iter()
+                    .collect(),
                 None => editor.documents().map(Document::id).collect(),
             };
             for id in ids {

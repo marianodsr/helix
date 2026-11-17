@@ -126,20 +126,33 @@ Params: `{ "path", "line"?, "col"?, "endLine"?, "endCol"?, "split"?: "none" |
 "horizontal" | "vertical", "viewId"?, "focus"?: true, "interrupt"?:
 "whenIdle" | "always", "note"? }`. Opens the file (or switches to it) in the
 focused pane, a new split, or the given pane; selects the range or puts the
-cursor at the position; centres it; shows `note` on the status line. With
-`"focus": false` the file is loaded in the background without changing what
-the user sees. Result: `{ "docId", "path", "version", "viewId",
-"deferred": false }`. Errors: `not_found`.
+cursor at the position; centres it; shows `note` on the status line. Without
+`split` or `viewId`, a file that another pane already shows is shown there:
+that pane takes the focus (this holds for every jump: `locations` items,
+`editor/reload` and `editor/reveal` `follow`). With `"focus": false` the
+file is loaded in the background without changing what the user sees.
+`endLine` without `endCol` selects whole lines, line ending included.
+Result: `{ "docId", "path", "version", "viewId", "deferred" }`; `viewId` is
+null for a background open and when deferred. Errors: `not_found`.
+
+**Paths and open buffers.** A requested path that names, through a symlink,
+a file already open under another name refers to that buffer, and results
+carry the name it is open under (details in PROTOCOL_NOTES.md).
 
 **Not yanking the user.** Any request that moves the user's focus
-(`editor/open` with focus, `locations/set` with `goto`, `view/focus`,
-`editor/select`, `editor/command`) honours `interrupt`. With `whenIdle` (the
-default), if the user is in insert mode or pressed a key in the last 1500 ms,
-Helix does not move: it stores the request as the pending jump (one slot, the
-newest wins), shows "bb wants to show <file>:<line> (:bb-go)" on the status
-line, and answers `"deferred": true`. `:bb-go` performs it. `always` moves at
-once. Every one of those methods accepts `interrupt` and includes
-`"deferred": <bool>` in its result; a deferred `editor/command` has not run.
+(`editor/open` with focus, `locations/set` with `goto`, `editor/reload` and
+`editor/reveal` with `follow`, `view/focus`, `view/close` of the focused
+pane, `editor/select`, `editor/command`) honours `interrupt`. With
+`whenIdle` (the default), if the user is busy (in insert mode, pressed a
+key in the last 1500 ms, has a key sequence half typed, or has a prompt,
+picker or dialog open) Helix does not move: it stores the request as the
+pending jump (one slot, the newest wins), shows "bb wants to show
+<file>:<line> (:bb-go)" on the status line, and answers `"deferred": true`.
+`:bb-go` performs it, checking it again first. `always` moves at once.
+Every one of those methods accepts `interrupt` and includes
+`"deferred": <bool>` in its result (`editor/reload` only with `follow`); a
+deferred `editor/command` has not run. A deferred `editor/reveal` animates
+what is on screen now and plays again where `:bb-go` lands.
 
 ### editor/text
 
@@ -165,7 +178,7 @@ buffer, subject to `interrupt`. Without `paths`, considers
 every open buffer. Buffers with unsaved changes are skipped unless `force`.
 Selections and scroll position are preserved as far as the new text allows.
 Result: `{ "reloaded": [path], "unchanged": [path], "skippedModified": [path],
-"missing": [path] }`.
+"missing": [path], "deferred"? }` (`deferred` only with `follow`).
 
 ### editor/reveal
 
@@ -181,7 +194,8 @@ purely visual: nothing in the document changes. Any key press ends the
 animation at once and shows the final state. Ranges outside the visible area
 are not animated unless `follow` moves the view there. `durationMs` is the
 total for the request (50 to 3000), whatever the amount of text. Capability
-`reveal`. Result: `{ "animated": <number of ranges> }`.
+`reveal`. Result: `{ "animated": <number of ranges with something on
+screen>, "deferred" }`.
 
 `[editor.bridge] reveal = false` turns the animation off; requests then
 succeed and do nothing.
@@ -211,7 +225,9 @@ agent wants to show, in order, each with a `note` explaining it). Any other
 name is allowed. `activate` makes it the list the walk commands use; `goto`
 also jumps to that item (subject to `interrupt`, see `editor/open`). While
 the user stands on an item, its `note` shows on the status line. At most 2000
-items. Result: `{ "count" }`. `locations/clear` takes `{ "list"? }`.
+items. An item's `endLine` selects through that line, line ending included.
+Result: `{ "count", "deferred" }`. `locations/clear` takes `{ "list"? }` and
+returns `{}`.
 
 ### view/list
 
@@ -222,14 +238,17 @@ Params: `{}`. Result: `{ "views": [{ "viewId", "docId", "path", "focused",
 
 ### view/focus, view/close
 
-Params: `{ "viewId" }`. `view/close` closes the pane, not the buffer, and
-refuses to close the last one (`unsupported`). Result: `{}`.
+Params: `{ "viewId", "interrupt"? }`. `view/close` closes the pane, not the
+buffer, and refuses to close the last one (`unsupported`); closing the
+focused pane moves the user's focus, so it honours `interrupt`, closing any
+other pane never waits. Unknown `viewId`: `not_found`. Result:
+`{ "deferred" }`.
 
 ### editor/select
 
 Params: `{ "viewId"?, "ranges": [Range], "primary"?: 0, "center"?: true }`.
 Sets the selections of a view (default: the focused one) and scrolls them
-into view. Result: `{ "version" }`.
+into view. Honours `interrupt`. Result: `{ "version", "deferred" }`.
 
 ### editor/command
 
@@ -243,21 +262,27 @@ Params, exactly one of:
 - `{ "keys": "<space>f" }`: key events in Helix's own key notation, handled
   as if typed.
 
-Result: `{ "status"?: { "message", "severity" } }` with whatever the command
-put on the status line. Subject to the command policy below; a refused
-command fails with `unsupported` and `data.reason`.
+Result: `{ "deferred", "mode", "status"?: { "message", "severity" },
+"overlay"?: "prompt" | "picker" | "popup" | "other", "pendingKeys"? }`:
+`status` is whatever the command put on the status line, `overlay` what it
+left open on top of the editor, `pendingKeys` a half-typed key sequence.
+Nothing waits for more input. Subject to the command policy below; a refused
+command fails with `unsupported` and `data.reason` (and `data.command`, and
+for `keys` `data.key` and `data.sent`).
 
 **Command policy** (`[editor.bridge] commands`, enforced in Helix):
 
 | Value | Allows |
 |---|---|
-| `"safe"` (default) | every command except those that run a shell (`sh`, `run-shell-command`, `pipe`, `pipe-to`, `insert-output`, `append-output`, and their static equivalents), shell expansions in typed lines, and the force variants that discard unsaved work (`quit!`, `quit-all!`, `buffer-close!`, `buffer-close-all!`, `buffer-close-others!`, `reload!` on a modified buffer, `cquit!`) |
+| `"safe"` (default) | every command except: those that run a shell (`sh`, `run-shell-command`, `pipe`, `pipe-to`, `insert-output`, `append-output`, and their static equivalents) and `%sh{…}` expansions anywhere in a typed line; those that discard unsaved work (`quit!`, `quit-all!`, `buffer-close!`, `buffer-close-all!`, `buffer-close-others!`, `cquit!`, `reload`/`reload!` while the buffer is modified, `reload-all` while any is) or overwrite a file changed on disk (the `write!` family); those that load configuration that can name programs (`config-reload`, `workspace-trust`, `workspace-untrust`, `workspace-exclude`, `:set`/`:toggle` of `shell`, `clipboard-provider`, `terminal`, `workspace-trust`, `bridge`); `lsp-workspace-command`, the debugger, `suspend`, `command_palette`, keys bound to macros, and the `:bb-*` commands that speak to bb in the user's name (`:bb-send`, `:bb-ask`, `:bb-comment`, `:bb-comments-send`). The full list, with the reason for each, is `COMMAND_POLICY.md`. |
 | `"all"` | everything |
 | `"none"` | `editor/command` is disabled |
 
 `keys` are checked after key-map resolution, command by command, under the
 same policy; a sequence that opens the command prompt is allowed only up to
-what the policy would allow as `typed`.
+what the policy would allow as `typed`. The policy in force is the stricter
+of the one at start and the current configuration (`:set` or a reloaded
+config can tighten it, only a restart loosens it); `bridge/hello` reports it.
 
 ### annotations/set
 
@@ -358,9 +383,10 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 | `:bb-locations [list]` | Opens a picker over a list set by `locations/set` (default: the active one) and makes it active. |
 | `:bb-next`, `:bb-prev` | Jump through the active list. |
 | `:bb-go` | Performs the pending jump a client requested while the user was busy. |
-| `:bb-status` | Shows the socket path and connected clients. |
+| `:bb-status` | Shows the connected clients (with their subscriptions), what the bridge offers and the socket path. |
+| `:bb-annotations` | Hides or shows every bridge annotation for the session. |
 
-When no client is subscribed to `send`, these commands fail with a status-line
+When no client is subscribed to `send`, the commands that emit `event/send` fail with a status-line
 error and change nothing. After emitting, Helix shows a short status message
 ("Comment added", "Sent to bb"), which a client may replace with
 `editor/status`.
@@ -380,3 +406,6 @@ reveal = true          # animate text an agent just wrote (editor/reveal)
 ```
 
 `HELIX_BRIDGE=0` in the environment also disables it.
+`HELIX_KITTY_KEYBOARD=enabled|disabled` overrides `[editor]
+kitty-keyboard-protocol` at start (inside bb, bb's terminal answers the
+capability query first, so `auto` never enables it there).

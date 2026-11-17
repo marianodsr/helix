@@ -38,7 +38,7 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::annotations::blend;
-use crate::bridge::convert::{char_from_pos, resolve_path};
+use crate::bridge::convert::{char_from_pos, focus_view_of, open_path, resolve_path};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{parse_params, Range as ProtoRange, RpcError, RpcResult};
@@ -238,6 +238,7 @@ fn follow_first(
         (None, Some(line)) => text.line_to_char(line.min(text.len_lines() - 1)),
         (None, None) => return,
     };
+    focus_view_of(editor, doc);
     if view!(editor).doc != doc {
         editor.switch(doc, Action::Replace);
     }
@@ -625,7 +626,11 @@ pub fn reveal(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 return reveal_on_main(editor, &path, on_disk, params, duration, false)
                     .map(|n| (n, false));
             }
-            if !on_disk && editor.document_id_by_path(&path).is_none() {
+            if !on_disk
+                && editor
+                    .document_id_by_path(&open_path(editor, &path))
+                    .is_none()
+            {
                 return Err(RpcError::not_found(format!("{} not found", path.display())));
             }
             let line = params
@@ -661,6 +666,7 @@ fn reveal_on_main(
     duration: Duration,
     follow: bool,
 ) -> Result<usize, RpcError> {
+    let path = &open_path(editor, path);
     let doc = match editor.document_id_by_path(path) {
         Some(doc) => doc,
         None if !on_disk => {

@@ -14,8 +14,8 @@ use serde_json::Value;
 use slotmap::{Key, KeyData};
 
 use crate::bridge::convert::{
-    char_after_line, char_from_pos, doc_num, path_string, resolve_path, selection_to_proto,
-    selection_with_text, text_in_range,
+    char_after_line, char_from_pos, doc_num, focus_view_of, open_path, path_string, resolve_path,
+    selection_to_proto, selection_with_text, text_in_range,
 };
 use crate::bridge::dispatch::{on_editor, CAPABILITIES};
 use crate::bridge::events::{mode_name, DocMeta};
@@ -178,6 +178,7 @@ pub(crate) fn open_on_main(
     exists: bool,
     params: OpenParams,
 ) -> Result<OpenResult, RpcError> {
+    let path = &open_path(editor, path);
     if !exists && editor.document_id_by_path(path).is_none() {
         return Err(RpcError::not_found(format!("{} not found", path.display())));
     }
@@ -191,6 +192,11 @@ pub(crate) fn open_on_main(
                 )));
             }
             editor.focus(view);
+        } else if params.split == Split::None {
+            // a pane that already shows the file takes the focus
+            if let Some(doc) = editor.document_id_by_path(path) {
+                focus_view_of(editor, doc);
+            }
         }
     }
     let action = match (params.focus, params.split) {
@@ -257,7 +263,7 @@ fn find_doc(editor: &Editor, doc_id: Option<usize>, path: Option<&Path>) -> Opti
             .documents()
             .map(Document::id)
             .find(|id| doc_num(*id) == n),
-        (None, Some(path)) => editor.document_id_by_path(path),
+        (None, Some(path)) => editor.document_id_by_path(&open_path(editor, path)),
         (None, None) => None,
     }
 }

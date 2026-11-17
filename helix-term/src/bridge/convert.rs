@@ -14,7 +14,7 @@ use helix_core::{
     graphemes::next_grapheme_boundary, line_ending::line_end_char_index, Range as HxRange, Rope,
     RopeSlice, Selection,
 };
-use helix_view::DocumentId;
+use helix_view::{DocumentId, Editor};
 
 use super::protocol::{Position, Range, TextRange};
 
@@ -184,6 +184,55 @@ pub fn resolve_path(path: &str, root: &Path) -> PathBuf {
         root.join(p)
     };
     helix_stdx::path::canonicalize(p)
+}
+
+/// The path `path`'s file is open under, when it is open under another
+/// name: Helix does not resolve symlinks, so `/tmp/x` and `/private/tmp/x`
+/// would be two buffers of one file. Only open buffers with the same file
+/// name are compared (by resolved path), so the usual case, a path that is
+/// open as given or not open at all, costs no file-system call.
+pub fn open_path(editor: &Editor, path: &Path) -> PathBuf {
+    if editor.document_id_by_path(path).is_some() {
+        return path.to_path_buf();
+    }
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    let mut real = None;
+    for doc in editor.documents() {
+        let Some(other) = doc.path().filter(|p| p.file_name() == Some(name)) else {
+            continue;
+        };
+        let real = real.get_or_insert_with(|| std::fs::canonicalize(path).ok());
+        let Some(real) = real else {
+            break;
+        };
+        if std::fs::canonicalize(other).is_ok_and(|o| o == *real) {
+            return other.to_path_buf();
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Focus a pane that already shows `doc`, so a jump moves there instead of
+/// opening the file again in the focused pane. The focused pane wins if it
+/// shows it; otherwise the first in layout order.
+pub fn focus_view_of(editor: &mut Editor, doc: DocumentId) {
+    if editor
+        .tree
+        .try_get(editor.tree.focus)
+        .is_some_and(|v| v.doc == doc)
+    {
+        return;
+    }
+    let shown = editor
+        .tree
+        .traverse()
+        .find(|(_, view)| view.doc == doc)
+        .map(|(id, _)| id);
+    if let Some(view) = shown {
+        editor.focus(view);
+    }
 }
 
 /// RFC 3339 UTC timestamp, seconds precision.

@@ -25,7 +25,7 @@ use helix_view::Editor;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use crate::bridge::convert::{doc_num, path_string};
+use crate::bridge::convert::{doc_num, open_path, path_string};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::methods::command::{layers, Layer};
 use crate::bridge::methods::editor::{open_on_main, view_from_num};
@@ -246,6 +246,7 @@ pub fn open(
         let result = open_on_main(editor, &path, exists, params)?;
         return Ok(serde_json::to_value(result).unwrap_or_default());
     }
+    let path = open_path(editor, &path);
     let open = editor
         .document_id_by_path(&path)
         .and_then(|id| editor.document(id));

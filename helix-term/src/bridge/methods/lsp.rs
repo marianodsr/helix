@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use slotmap::Key;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-use crate::bridge::convert::{char_from_pos, pos_from_char, resolve_path};
+use crate::bridge::convert::{char_from_pos, open_path, pos_from_char, resolve_path};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::events::{broadcast, wants_kind, Kind};
 use crate::bridge::protocol::{parse_params, ErrorCode, Position, Range, RpcError, RpcResult};
@@ -575,6 +575,7 @@ fn prepare(
             texts: Texts::snapshot(editor),
         });
     };
+    let path = &open_path(editor, path);
     let doc_id = match editor.document_id_by_path(path) {
         Some(id) => {
             if loaded.0 != Some(id) {

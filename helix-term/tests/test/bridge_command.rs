@@ -1045,3 +1045,115 @@ async fn policy_set_at_start_cannot_be_loosened() -> anyhow::Result<()> {
     bridge.finish().await?;
     Ok(())
 }
+
+/// The paths of the panes, left to right, and the focused pane's path.
+async fn panes(c: &mut Client) -> anyhow::Result<(Vec<String>, String)> {
+    let list = c.call("view/list", json!({})).await?;
+    let views = list["views"].as_array().unwrap();
+    let paths = views
+        .iter()
+        .map(|v| v["path"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    let focused = views
+        .iter()
+        .find(|v| v["focused"] == true)
+        .map(|v| v["path"].as_str().unwrap_or_default().to_owned())
+        .unwrap_or_default();
+    Ok((paths, focused))
+}
+
+/// A jump to a file another pane shows focuses that pane instead of
+/// opening the file again in the focused one.
+#[tokio::test(flavor = "multi_thread")]
+async fn jumps_go_to_the_pane_that_shows_the_file() -> anyhow::Result<()> {
+    let a = helpers::temp_file_with_contents("a1\na2\na3\na4\n")?;
+    let b = helpers::temp_file_with_contents("b1\nb2\nb3\nb4\n")?;
+    let (pa, pb) = (canonical(a.path()), canonical(b.path()));
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(a.path(), None))?;
+    bridge
+        .run(move |_, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            // a on the left, b on the right (focused)
+            c.call("editor/open", always(json!({ "path": pb, "split": "vertical" })))
+                .await?;
+            let both = vec![pa.clone(), pb.clone()];
+            assert_eq!(panes(&mut c).await?, (both.clone(), pb.clone()));
+
+            let r = c
+                .call("editor/open", always(json!({ "path": pa, "line": 3 })))
+                .await?;
+            assert_eq!(panes(&mut c).await?, (both.clone(), pa.clone()), "editor/open");
+            let st = c.call("editor/state", json!({})).await?;
+            assert_eq!(st["focused"]["selections"][0]["start"], pos(3, 1));
+            assert_eq!(r["viewId"], c.call("view/list", json!({})).await?["views"][0]["viewId"]);
+
+            c.call(
+                "locations/set",
+                always(json!({ "list": "t", "items": [{ "path": pb, "line": 2 }], "goto": 0 })),
+            )
+            .await?;
+            assert_eq!(panes(&mut c).await?, (both.clone(), pb.clone()), "locations goto");
+
+            c.call(
+                "editor/reveal",
+                always(json!({ "path": pa, "ranges": [{ "start": pos(4, 1), "end": pos(5, 1) }], "follow": true })),
+            )
+            .await?;
+            assert_eq!(panes(&mut c).await?, (both.clone(), pa.clone()), "reveal follow");
+
+            // an explicit split still opens a new pane
+            c.call("editor/open", always(json!({ "path": pa, "split": "horizontal" })))
+                .await?;
+            assert_eq!(panes(&mut c).await?.0.len(), 3);
+            Ok(())
+        })
+        .await?;
+    bridge.finish().await?;
+    Ok(())
+}
+
+/// A file reached through a symlinked directory is the buffer already open
+/// under its other name, not a second one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_symlinked_path_finds_the_open_buffer() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real)?;
+    std::fs::write(real.join("x.txt"), "one\ntwo\n")?;
+    std::os::unix::fs::symlink(&real, dir.path().join("link"))?;
+    let (via_real, via_link) = (
+        canonical(&real.join("x.txt")),
+        canonical(&dir.path().join("link").join("x.txt")),
+    );
+    assert_ne!(via_real, via_link);
+    let mut bridge = Bridge::start(AppBuilder::new())?;
+    bridge
+        .run(move |_, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            let first = c
+                .call("editor/open", always(json!({ "path": via_link })))
+                .await?;
+            let count = |s: &Value| s["documents"].as_array().unwrap().len();
+            let before = count(&c.call("editor/state", json!({})).await?);
+            let again = c
+                .call("editor/open", always(json!({ "path": via_real, "line": 2 })))
+                .await?;
+            assert_eq!(again["docId"], first["docId"]);
+            assert_eq!(again["path"], via_link.as_str(), "the open buffer's name");
+            assert_eq!(count(&c.call("editor/state", json!({})).await?), before);
+            let r = c
+                .call(
+                    "editor/applyEdits",
+                    json!({ "path": via_real, "edits": [{ "range": { "start": pos(1, 1), "end": pos(1, 1) }, "newText": "zero\n" }] }),
+                )
+                .await?;
+            assert_eq!(r["path"], via_link.as_str());
+            let t = c.call("editor/text", json!({ "path": via_real })).await?;
+            assert_eq!(t["text"], "zero\none\ntwo\n");
+            assert_eq!(t["modified"], true);
+            Ok(())
+        })
+        .await?;
+    bridge.finish().await?;
+    Ok(())
+}
