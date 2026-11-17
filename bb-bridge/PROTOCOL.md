@@ -218,7 +218,7 @@ work for it.
 | `event/focus` | `{ "docId", "path" }` | kind `documents`; the focused buffer changed |
 | `event/diagnostics` | `{ "path", "errors", "warnings", "infos", "hints" }` | coalesced per path, 200 ms |
 | `event/mode` | `{ "mode" }` | |
-| `event/send` | `{ "kind": "send" \| "ask", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false }` | the user ran `:bb-send` or `:bb-ask` |
+| `event/send` | `{ "kind": "send" \| "ask" \| "comment" \| "flush", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false }` | the user ran one of the `:bb-*` commands below; `flush` carries no ranges |
 | `event/lsp` | `{ "id", "name", "state": "initialized" \| "exited" }` | |
 | `event/externalChange` | `{ "path", "modified": true }` | a file open with unsaved changes also changed on disk |
 
@@ -232,12 +232,21 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 |---|---|
 | `:bb-send [note]` | Emits `event/send` (`kind: "send"`) with the current selections; `:bb-send!` sets `sendNow`. |
 | `:bb-ask <question>` | Emits `event/send` with `kind: "ask"` and `sendNow: true`. |
+| `:bb-comment [text]` | Emits `event/send` with `kind: "comment"`: a review comment on the selected lines, kept by the client until flushed. With no text it opens a one-line `comment:` prompt and emits on Enter; Escape cancels. |
+| `:bb-comments-send` | Emits `event/send` with `kind: "flush"`: send every pending comment to the thread. |
 | `:bb-changes` | Opens a picker over the list set by `changes/set`. |
 | `:bb-next-change`, `:bb-prev-change` | Jump through that list. |
 | `:bb-status` | Shows the socket path and connected clients. |
 
-When no client is subscribed to `send`, `:bb-send` and `:bb-ask` fail with a
-status-line error and change nothing.
+When no client is subscribed to `send`, these commands fail with a status-line
+error and change nothing. After emitting, Helix shows a short status message
+("Comment added", "Sent to bb"), which a client may replace with
+`editor/status`.
+
+Every command is an ordinary typed command with no default key binding, so the
+user binds it in their own `config.toml` like any other, for example
+`C = ":bb-comment"` under `[keys.select]`. The bridge never adds, removes or
+overrides key bindings, and it reads the user's normal Helix configuration.
 
 ## Configuration
 

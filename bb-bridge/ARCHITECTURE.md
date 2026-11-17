@@ -11,6 +11,29 @@ helix-editor/helix. Licence MPL-2.0: changes to upstream files stay published.
 The wire contract is [PROTOCOL.md](PROTOCOL.md). This file says how it is
 built and what "good" means.
 
+## What the user asked for
+
+These are the acceptance criteria; everything else serves them.
+
+1. **Their Helix, unchanged.** Every key binding, theme and language setting
+   in their own `~/.config/helix` works. The fork reads the normal config and
+   adds only typed commands, which they bind themselves.
+2. **bb always knows where they are.** Switching files or moving the cursor
+   in Helix is reflected in bb (current file, line, selection) without the
+   user doing anything, and agents can use it.
+3. **Select, comment, send.** Select lines, write a comment, and send it to
+   the agent, one at a time or several comments in one go.
+4. **A full editor, not a preview.** They will live in it all day inside bb,
+   and will add a file tree later, so the editor surface must take the whole
+   work area when wanted, pass every key through, and stay fast.
+
+On the file tree: upstream Helix has a built-in file explorer picker
+(`space e`) but no plugin system; that is still an open pull request
+(helix-editor/helix#8675, branch `steel-event-system` of mattwparas/helix).
+Third-party tree plugins only run there. Keeping this patch additive is what
+lets it be carried onto that branch later; do not rely on anything that would
+make that hard.
+
 ## Two halves
 
 ```
