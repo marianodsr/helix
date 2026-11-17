@@ -191,10 +191,16 @@ fn bb_status(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> a
         })
         .collect();
     let socket = shared.info.socket.display();
+    let capabilities: Vec<&str> = crate::bridge::dispatch::CAPABILITIES
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    let capabilities = capabilities.join(" ");
     cx.editor.set_status(match clients.len() {
-        0 => format!("bb bridge: {socket}, no clients"),
+        0 => format!("bb bridge: {socket}, no clients; offers {capabilities}"),
         n => format!(
-            "bb bridge: {socket}, {n} client{}: {}",
+            "bb bridge: {socket}, {n} client{}: {}; offers {capabilities}",
             if n == 1 { "" } else { "s" },
             clients.join(", ")
         ),

@@ -40,7 +40,19 @@ pub fn char_from_pos(text: RopeSlice, pos: Position) -> usize {
     }
     let start = text.line_to_char(line);
     let end = line_end_char_index(&text, line);
-    (start + pos.col.max(1) - 1).min(end)
+    start.saturating_add(pos.col.max(1) - 1).min(end)
+}
+
+/// The end of a whole-line range through 1-based `line`: the start of the
+/// next line, so the line ending is included as `x` selects it, or the end
+/// of the text on the last line.
+pub fn char_after_line(text: RopeSlice, line: usize) -> usize {
+    let next = line.max(1);
+    if next >= text.len_lines() {
+        text.len_chars()
+    } else {
+        text.line_to_char(next)
+    }
 }
 
 /// True when Helix would draw this range as a plain cursor.
@@ -221,6 +233,43 @@ mod tests {
         assert_eq!(pos_from_char(s, 5), p(2, 1)); // 'x'
         assert_eq!(char_from_pos(s, p(1, 4)), 3);
         assert_eq!(char_from_pos(s, p(2, 3)), 7);
+    }
+
+    #[test]
+    fn huge_columns_clamp_to_the_line_end() {
+        let text = Rope::from(
+            "one
+two
+",
+        );
+        let s = text.slice(..);
+        assert_eq!(char_from_pos(s, p(1, usize::MAX)), 3);
+        assert_eq!(char_from_pos(s, p(2, usize::MAX)), 7);
+        assert_eq!(char_from_pos(s, p(usize::MAX, usize::MAX)), 8);
+    }
+
+    #[test]
+    fn whole_lines() {
+        let lines = |text: &str, a: usize, b: usize| {
+            let text = Rope::from(text);
+            let s = text.slice(..);
+            let start = char_from_pos(s, p(a, 1));
+            s.slice(start..char_after_line(s, b)).to_string()
+        };
+        let trailing = "first\nnaïve café 🦀\nlast\n";
+        assert_eq!(lines(trailing, 1, 1), "first\n");
+        assert_eq!(lines(trailing, 2, 2), "naïve café 🦀\n");
+        assert_eq!(lines(trailing, 1, 3), trailing);
+        assert_eq!(lines(trailing, 3, 3), "last\n");
+        assert_eq!(lines(trailing, 3, 99), "last\n");
+        let bare = "first\nnaïve café 🦀\nlast";
+        assert_eq!(lines(bare, 3, 3), "last");
+        assert_eq!(lines(bare, 2, 3), "naïve café 🦀\nlast");
+        assert_eq!(lines("a\r\nb\r\n", 1, 1), "a\r\n");
+        assert_eq!(lines("", 1, 1), "");
+        // the case from the live fork: line 3 to 5 of a longer file
+        let long = "1\n2\nthree\nfour line, 15ch\nfive\nsix\n";
+        assert_eq!(lines(long, 3, 5), "three\nfour line, 15ch\nfive\n");
     }
 
     #[test]

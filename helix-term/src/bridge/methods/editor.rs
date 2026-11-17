@@ -14,8 +14,8 @@ use serde_json::Value;
 use slotmap::{Key, KeyData};
 
 use crate::bridge::convert::{
-    char_from_pos, doc_num, path_string, resolve_path, selection_to_proto, selection_with_text,
-    text_in_range,
+    char_after_line, char_from_pos, doc_num, path_string, resolve_path, selection_to_proto,
+    selection_with_text, text_in_range,
 };
 use crate::bridge::dispatch::{on_editor, CAPABILITIES};
 use crate::bridge::events::{mode_name, DocMeta};
@@ -217,13 +217,16 @@ pub(crate) fn open_on_main(
         );
         let selection = match params.end_line {
             Some(end_line) => {
-                let end = char_from_pos(
-                    text,
-                    Position {
-                        line: end_line,
-                        col: params.end_col.unwrap_or(usize::MAX),
-                    },
-                );
+                let end = match params.end_col {
+                    Some(col) => char_from_pos(
+                        text,
+                        Position {
+                            line: end_line,
+                            col,
+                        },
+                    ),
+                    None => char_after_line(text, end_line),
+                };
                 Selection::single(start, end.max(start))
             }
             None => Selection::point(start),
