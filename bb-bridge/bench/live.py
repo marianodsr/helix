@@ -222,6 +222,209 @@ def pos(line, col):
     return {"line": line, "col": col}
 
 
+# --- step 2a: editor/reload, focus check, locations, editor/applyEdits ---------
+
+
+def _wait(f, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        v = f()
+        if v:
+            return v
+        time.sleep(0.02)
+    return None
+
+
+def _text(c, path):
+    return c.call("editor/text", {"path": path})["text"]
+
+
+def _stall_during(c_socket, action):
+    """Run `action` while another client sends editor/state back to back;
+    returns (action ms, baseline p50 rtt ms, max rtt ms during the action)."""
+    probe = Client(c_socket)
+    base = []
+    for _ in range(50):
+        t = time.perf_counter()
+        probe.call("editor/state")
+        base.append((time.perf_counter() - t) * 1000)
+    base.sort()
+    rtts, stop = [], threading.Event()
+
+    def hammer():
+        while not stop.is_set():
+            t = time.perf_counter()
+            probe.call("editor/state")
+            rtts.append((time.perf_counter() - t) * 1000)
+
+    th = threading.Thread(target=hammer)
+    th.start()
+    time.sleep(0.05)
+    t = time.perf_counter()
+    action()
+    took = (time.perf_counter() - t) * 1000
+    time.sleep(0.05)
+    stop.set()
+    th.join()
+    probe.close()
+    return took, base[len(base) // 2], max(rtts)
+
+
+def _verify_2a(sb, hx, check, reg):
+    c = Client(reg["socket"])
+    caps = c.call("bridge/hello", {"client": "live-2a"})["capabilities"]
+    check(all(k in caps for k in ("reload", "locations", "applyEdits")), "2a: capabilities", caps)
+    c.call("events/subscribe", {"events": ["externalChange"]})
+
+    # reload keeps the cursor on its line, `u` undoes it
+    sb.write("reload.txt", "one\ntwo\nthree\n")
+    rl = sb.path("reload.txt")
+    c.call("editor/open", {"path": rl, "line": 3})
+    time.sleep(0.02)
+    sb.write("reload.txt", "zero\none\ntwo\nthree\n")
+    r = c.call("editor/reload", {"paths": [rl]})
+    check(r["reloaded"] == [rl] and r["skippedModified"] == [], "2a: reload", r)
+    st = c.call("editor/state")
+    check(st["focused"]["selections"][0]["start"] == pos(4, 1), "2a: reload keeps the cursor on its line",
+          st["focused"]["selections"])
+    hx.esc()
+    hx.send("u")
+    check(_wait(lambda: _text(c, rl) == "one\ntwo\nthree\n"), "2a: u undoes a reload")
+    hx.send(":reload" + ENTER)
+    _wait(lambda: _text(c, rl) == "zero\none\ntwo\nthree\n")
+
+    # unsaved changes are kept and announced once
+    hx.send("ggiX")
+    hx.esc()
+    time.sleep(0.02)
+    sb.write("reload.txt", "from an agent\n")
+    r = c.call("editor/reload", {})
+    check(rl in r["skippedModified"], "2a: modified buffer skipped", r)
+    ev = c.event("event/externalChange", timeout=2)
+    check(ev == {"path": rl, "modified": True}, "2a: event/externalChange", ev)
+    c.call("editor/reload", {})
+    check(not [m for m in c.drain(0.3) if m["method"] == "event/externalChange"], "2a: announced once")
+    r = c.call("editor/reload", {"paths": [rl], "force": True})
+    check(r["reloaded"] == [rl] and _text(c, rl) == "from an agent\n", "2a: force reload", r)
+
+    # the terminal regains focus: clean buffers reload, modified ones warn
+    sb.write("focus.txt", "before\n")
+    fp = sb.path("focus.txt")
+    c.call("editor/open", {"path": fp, "focus": False})
+    time.sleep(0.02)
+    sb.write("focus.txt", "after\n")
+    hx.send("\x1b[O")
+    hx.send("\x1b[I")
+    check(_wait(lambda: _text(c, fp) == "after\n"), "2a: focus-in reloads a clean buffer")
+    hx.send("ggiY")
+    hx.esc()
+    time.sleep(0.02)
+    sb.write("reload.txt", "again\n")
+    m = hx.mark()
+    hx.send("\x1b[I")
+    ev = c.event("event/externalChange", timeout=2)
+    check(ev["path"] == rl, "2a: focus-in announces a modified buffer", ev)
+    check(hx.wait_text("changed on disk", m), "2a: focus-in warns on the status line")
+    check(_text(c, rl).startswith("Y"), "2a: the user's edit is kept")
+    hx.send(":reload" + ENTER)
+
+    # locations: goto, walk with wrap-around, picker
+    lib_rs = sb.path("src/lib.rs")
+    items = [
+        {"path": "src/lib.rs", "line": 2, "label": "body", "note": "the sum"},
+        {"path": "reload.txt", "line": 1, "note": "reloaded file"},
+        {"path": "gone.txt", "line": 1, "note": "deleted"},
+    ]
+    m = hx.mark()
+    r = c.call("locations/set", {"list": "tour", "title": "Live tour", "items": items, "goto": 0})
+    check(r == {"count": 3, "deferred": False}, "2a: locations/set", r)
+    check(c.call("editor/state")["focused"]["path"] == lib_rs, "2a: goto jumps")
+    check(hx.wait_text("tour 1/3: the sum", m), "2a: goto shows the note")
+    m = hx.mark()
+    hx.send(":bb-next" + ENTER)
+    check(hx.wait_text("tour 2/3: reloaded file", m), "2a: :bb-next")
+    m = hx.mark()
+    hx.send(":bb-next" + ENTER)
+    check(hx.wait_text("tour 1/3: the sum (skipped 1 missing file, wrapped)", m), "2a: :bb-next skips and wraps")
+    m = hx.mark()
+    hx.send("j")
+    hx.send("k")
+    check(hx.wait_text("tour 1/3: the sum", m), "2a: the note stays while the cursor is on the item")
+    hx.send(":bb-prev" + ENTER)
+    _wait(lambda: c.call("editor/state")["focused"]["path"] == rl)
+    m = hx.mark()
+    hx.send(":bb-locations" + ENTER)
+    check(hx.wait_text("reloaded file", m) and hx.wait_text("body", m), "2a: :bb-locations picker shows the items")
+    time.sleep(0.2)
+    hx.send(ENTER)
+    check(_wait(lambda: c.call("editor/state")["focused"]["path"] == lib_rs), "2a: picker jumps to the item")
+    c.call("locations/clear", {})
+
+    # applyEdits: one undo step, version check, background open and save
+    v = c.call("editor/state")["focused"]["version"]
+    r = c.call("editor/applyEdits", {"path": lib_rs, "version": v, "edits": [
+        {"range": {"start": pos(2, 5), "end": pos(2, 10)}, "newText": "a - b"},
+        {"range": {"start": pos(1, 8), "end": pos(1, 11)}, "newText": "sub"},
+    ]})
+    check(r["version"] > v and r["modified"] is True, "2a: applyEdits", r)
+    check(_text(c, lib_rs) == "pub fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n", "2a: applyEdits text")
+    try:
+        c.call("editor/applyEdits", {"path": lib_rs, "version": v, "edits": []})
+        check(False, "2a: stale version refused")
+    except RpcError as e:
+        check(e.code == 1002 and e.error["data"]["version"] == r["version"], "2a: stale version refused", e.error)
+    hx.esc()
+    hx.send("u")
+    check(_wait(lambda: _text(c, lib_rs) == "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"),
+          "2a: one u restores the buffer")
+    sb.write("bg.txt", "background\n")
+    bg = sb.path("bg.txt")
+    r = c.call("editor/applyEdits", {"path": "bg.txt", "save": True, "edits": [
+        {"range": {"start": pos(1, 1), "end": pos(1, 1)}, "newText": "saved "}]})
+    with open(bg) as f:
+        on_disk = f.read()
+    check(r["modified"] is False and on_disk == "saved background\n", "2a: background applyEdits with save", r)
+    check(c.call("editor/state")["focused"]["path"] == lib_rs, "2a: background edit keeps focus")
+
+    # a 20k-line file: how long does a reload hold the main thread?
+    lines = ["package main", ""]
+    for i in range(4000):
+        lines += [f"func g{i}(x int) int {{", f"\treturn x * {i}", "}", "", f"// g{i} ends"]
+    big = "\n".join(lines[:20000]) + "\n"
+    sb.write("big.go", big)
+    big_go = sb.path("big.go")
+    c.call("editor/open", {"path": big_go, "line": 10000})
+    time.sleep(0.3)
+
+    def rewrite(text):
+        time.sleep(0.01)
+        sb.write("big.go", text)
+
+    def bridge_reload():
+        assert c.call("editor/reload", {"paths": [big_go]})["reloaded"] == [big_go]
+
+    def helix_reload():
+        hx.send(":reload" + ENTER, pause=0)
+        _wait(lambda: _text(c, big_go) == big, timeout=10)
+
+    few = big.replace("\treturn x * 1", "\treturn x + 1")  # 1111 lines
+    every = "\n".join(line + " " for line in big.split("\n"))  # every line
+    for label, text in (("1111 of 20000 lines changed", few), ("every line changed", every)):
+        rewrite(text)
+        took, p50, worst = _stall_during(reg["socket"], bridge_reload)
+        print(f"INFO editor/reload of 20k lines, {label}: request {took:.1f}ms, "
+              f"editor/state p50 {p50:.2f}ms idle, worst {worst:.1f}ms during the reload")
+        check(worst < 100, f"2a: reload of 20k lines ({label}) does not stall the editor",
+              f"worst rtt {worst:.1f}ms")
+        # the same change back with Helix's own :reload, for comparison
+        rewrite(big)
+        took, p50, worst = _stall_during(reg["socket"], helix_reload)
+        print(f"INFO Helix's own :reload of the same change: {took:.1f}ms, "
+              f"worst editor/state {worst:.1f}ms during it")
+    hx.send(":bc!" + ENTER)
+    c.close()
+
+
 def verify(args):
     check = Checks()
     sb = Sandbox()
@@ -252,7 +455,7 @@ def _verify(args, sb, hx, check):
     b = Client(reg["socket"])
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
-    check(hello["capabilities"] == ["editor"] and hello["commandPolicy"] == "safe", "hello", hello)
+    check("editor" in hello["capabilities"] and hello["commandPolicy"] == "safe", "hello", hello)
 
     st = a.call("editor/state")
     check(st["focused"]["path"] == main_go and st["focused"]["languageId"] == "go", "state: focused main.go", st["focused"])
@@ -408,6 +611,8 @@ def _verify(args, sb, hx, check):
             closed = True
     check(closed, "client that never reads is disconnected")
     check(a.call("editor/state")["mode"] == "normal", "others unaffected")
+
+    _verify_2a(sb, hx, check, reg)
 
     # protocol errors on a live instance
     raw = Client(reg["socket"])
