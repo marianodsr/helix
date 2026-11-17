@@ -170,6 +170,11 @@ pub fn focus_gained(editor: &mut Editor) {
     methods::reload::focus_gained(editor);
 }
 
+/// A language server published diagnostics for `uri`, open or not.
+pub fn diagnostics_published(uri: &helix_core::Uri) {
+    methods::diagnostics::published(uri);
+}
+
 pub(crate) fn shared() -> Option<&'static Arc<Shared>> {
     BRIDGE.get().filter(|s| !s.is_stopped())
 }

@@ -846,6 +846,7 @@ impl Application {
                             server_id,
                             identifier: None,
                         };
+                        crate::bridge::diagnostics_published(&uri);
                         self.editor.handle_lsp_diagnostics(
                             &provider,
                             uri,

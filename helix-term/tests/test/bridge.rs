@@ -563,8 +563,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
 
             assert_eq!(c.error("no/such", json!({})).await?["code"], -32601);
             for stub in [
-                "diagnostics/get",
-                "lsp/query",
                 "view/list",
                 "editor/command",
                 "annotations/set",

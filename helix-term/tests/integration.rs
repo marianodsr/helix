@@ -20,6 +20,7 @@ mod test {
     mod bridge;
     #[cfg(unix)]
     mod bridge_buffers;
+    mod bridge_lsp;
     mod command_line;
     mod commands;
     #[cfg(unix)]
