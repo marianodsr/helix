@@ -29,11 +29,13 @@ syntax). Those notes are part of the contract.
     "startedAt": "2026-11-16T22:10:03Z",
     "cwd": "/repo/services/payments",
     "workspaceRoot": "/repo",
-    "env": { "BB_THREAD_ID": "thr_…", "BB_ENVIRONMENT_ID": "env_…", "BB_PROJECT_ID": "proj_…", "BB_TERMINAL_ID": "…" }
+    "env": { "BB_THREAD_ID": "thr_…", "BB_ENVIRONMENT_ID": "env_…", "BB_PROJECT_ID": "proj_…", "BB_TERMINAL_ID": "…", "BB_TERMINAL_SESSION_ID": "…" }
   }
   ```
 
-  `env` carries only those four variables, and only the ones that are set.
+  `env` carries only those five variables, and only the ones that are set.
+  bb's own thread terminals export only `BB_TERMINAL_SESSION_ID`, which a
+  client maps to the terminal's thread.
   A client that fails to connect to a listed socket may delete both files
   (stale instance).
 - macOS limits a socket path to 104 bytes. When the default path would be
@@ -93,7 +95,7 @@ Params: `{ "client": "bb-plugin", "clientVersion": "0.1.0" }`
 
 Result: `{ "protocol": 1, "helixVersion", "pid", "cwd", "workspaceRoot",
 "capabilities": ["editor", "reload", "locations", "views", "command",
-"diagnostics", "lsp", "applyEdits", "annotations"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
+"diagnostics", "lsp", "applyEdits", "annotations", "reveal"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
 clients feature-detect on it.
 
 ### editor/state
@@ -154,12 +156,35 @@ focused view. When every range is a bare cursor, `text` is that line.
 
 ### editor/reload
 
-Params: `{ "paths"?: [..], "force"?: false }`. Reloads open buffers whose file
-changed on disk since Helix last read or wrote it. Without `paths`, considers
+Params: `{ "paths"?: [..], "force"?: false, "reveal"?: false, "follow"?:
+false, "interrupt"? }`. Reloads open buffers whose file
+changed on disk since Helix last read or wrote it. With `reveal`, the text
+that changed is shown with the reveal animation (see `editor/reveal`); with
+`follow`, the view also moves to the first change of the first reloaded
+buffer, subject to `interrupt`. Without `paths`, considers
 every open buffer. Buffers with unsaved changes are skipped unless `force`.
 Selections and scroll position are preserved as far as the new text allows.
 Result: `{ "reloaded": [path], "unchanged": [path], "skippedModified": [path],
 "missing": [path] }`.
+
+### editor/reveal
+
+Params: `{ "path", "ranges": [Range], "removed"?: [{ "line", "text" }],
+"durationMs"?: 600, "follow"?: false, "interrupt"? }`.
+
+Shows text that an agent has just written as if it were being typed: the
+buffer already holds the final text (so the file, the language server and
+undo are never out of step), and for a short time the given ranges are
+uncovered progressively, in order, with a highlight that fades. `removed`
+lines are shown struck through above their position for the same time. It is
+purely visual: nothing in the document changes. Any key press ends the
+animation at once and shows the final state. Ranges outside the visible area
+are not animated unless `follow` moves the view there. `durationMs` is the
+total for the request (50 to 3000), whatever the amount of text. Capability
+`reveal`. Result: `{ "animated": <number of ranges> }`.
+
+`[editor.bridge] reveal = false` turns the animation off; requests then
+succeed and do nothing.
 
 ### editor/applyEdits
 
@@ -236,10 +261,23 @@ what the policy would allow as `typed`.
 
 ### annotations/set
 
-Params: `{ "namespace", "path", "items": [{ "line", "text", "severity"?:
-"info" | "warning" | "error" | "hint" }] }`. Replaces the virtual lines this
-namespace shows under the given lines of that file. An empty `items` clears
-them. Result: `{ "count" }`.
+Params: `{ "namespace", "path", "items": [{ "line", "endLine"?, "text",
+"kind"?: "comment" | "reply" | "note", "severity"?: "info" | "warning" |
+"error" | "hint", "sign"?: "<one grapheme>", "highlight"?: false }] }`.
+
+Replaces what this namespace shows in that file. Each item marks lines `line`
+to `endLine` (default: `line`) with a sign in the gutter, optionally a subtle
+background on those lines (`highlight`), and its `text` as virtual lines
+directly under `endLine`, wrapped to the view width and indented to the code,
+styled by `kind` and `severity` from the theme's own scopes so it looks right
+in any theme. Several items on the same line stack in order. Virtual lines
+are not part of the document: they are never selected, yanked, saved or sent
+to the language server, and they move with their lines as the user edits. An
+empty `items` clears the namespace for that file; `annotations/clear` takes
+`{ "namespace", "path"? }`. At most 500 items per file and 2000 characters
+per item. Result: `{ "count" }`.
+
+`:bb-annotations` toggles all bridge annotations on and off for the session.
 
 ### diagnostics/get
 
@@ -338,6 +376,7 @@ overrides key bindings, and it reads the user's normal Helix configuration.
 [editor.bridge]
 enable = true          # default in this fork; false disables the socket entirely
 commands = "safe"      # what editor/command may run: "safe", "all" or "none"
+reveal = true          # animate text an agent just wrote (editor/reveal)
 ```
 
 `HELIX_BRIDGE=0` in the environment also disables it.

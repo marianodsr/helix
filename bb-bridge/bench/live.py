@@ -4,6 +4,8 @@
     live.py verify  [--hx PATH] [--overflow-seconds 70]
     live.py bench   [--hx PATH]
     live.py compat  [--hx PATH] [--config DIR]   # DIR contains helix/config.toml
+    live.py lspbench [--hx PATH] [-n 50]          # step 2b, needs ~/go/bin/gopls
+    live.py lspbig  --repo DIR --file F --query JSON   # step 2b, a large Go repo
 
 Every run uses a throwaway HOME and XDG directories under $TMPDIR, so the
 user's own Helix config, cache and terminals are never touched. `verify`
@@ -35,6 +37,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 from bridge_client import Client, RpcError  # noqa: E402
 from rtt import fmt, measure  # noqa: E402
+import live_lsp  # noqa: E402  (step 2b)
 
 ESC = "\x1b"
 ENTER = "\r"
@@ -233,6 +236,9 @@ def verify(args):
         if not args.keep:
             sb.cleanup()
     _verify_2c(args, check)
+    # --- step 2b: diagnostics and lsp (bb-bridge/bench/live_lsp.py) ---
+    live_lsp.verify(args, Sandbox, check)
+    # --- end step 2b ---
     print(f"\n{check.passed} passed, {check.failed} failed")
     return 1 if check.failed else 0
 
@@ -253,7 +259,7 @@ def _verify(args, sb, hx, check):
     b = Client(reg["socket"])
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
-    check(hello["capabilities"][0] == "editor" and hello["commandPolicy"] == "safe", "hello", hello)
+    check("editor" in hello["capabilities"] and hello["commandPolicy"] == "safe", "hello", hello)
 
     st = a.call("editor/state")
     check(st["focused"]["path"] == main_go and st["focused"]["languageId"] == "go", "state: focused main.go", st["focused"])
@@ -414,7 +420,7 @@ def _verify(args, sb, hx, check):
     raw = Client(reg["socket"])
     raw.send_raw("{oops")
     check(raw.read()["error"]["code"] == -32700, "parse error")
-    check(raw.request("lsp/query", {})["error"]["code"] == -32601, "stub method: method_not_found")
+    check(raw.request("annotations/set", {})["error"]["code"] == -32601, "stub method: method_not_found")
     id = raw.send("editor/state")
     raw.notify("$/cancel", {"id": id})
     r = raw.response(id)
@@ -779,14 +785,22 @@ def snapshot(directory):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["verify", "bench", "compat"])
+    ap.add_argument("mode", choices=["verify", "bench", "compat", "lspbench", "lspbig"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
     ap.add_argument("--json", help="bench: also write results here")
     ap.add_argument("--keep", action="store_true", help="keep the sandbox directory")
+    # step 2b: lspbench (small module), lspbig (a large Go repository)
+    ap.add_argument("-n", type=int, default=50, help="lspbench/lspbig: samples per query")
+    ap.add_argument("--repo", help="lspbig: repository root")
+    ap.add_argument("--file", help="lspbig: file to open, relative to --repo")
+    ap.add_argument("--query", default="{}", help="lspbig: lsp/query params (JSON) with a position in --file")
+    ap.add_argument("--symbol", default="Handler", help="lspbig: workspaceSymbols query")
     args = ap.parse_args()
-    sys.exit({"verify": verify, "bench": bench, "compat": compat}[args.mode](args))
+    modes = {"verify": verify, "bench": bench, "compat": compat,
+             "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox)}
+    sys.exit(modes[args.mode](args))
 
 
 if __name__ == "__main__":

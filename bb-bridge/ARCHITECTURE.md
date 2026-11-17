@@ -33,6 +33,16 @@ These are the acceptance criteria; everything else serves them.
    that it has full control: anything the user can do from the keyboard, it
    can do through the bridge.
 
+6. **Watching the agent write.** Text an agent writes appears in the editor
+   as it lands, shown as if typed, without the user reloading anything.
+7. **Comments are visible in the code.** Leaving a comment marks the lines
+   in the gutter and shows the comment, and later the agent's reply, under
+   them.
+
+On "as it lands": bb does not give plugins the contents of an edit while the
+model is still generating it, only each edit when it is made. So the unit is
+one edit, revealed with an animation the moment it happens, not one token.
+
 On the file tree: upstream Helix has a built-in file explorer picker
 (`space e`) but no plugin system; that is still an open pull request
 (helix-editor/helix#8675, branch `steel-event-system` of mattwparas/helix).
@@ -125,12 +135,15 @@ helix-term/src/bridge/
     views.rs      view/*, editor/select                         (step 2c)
     command.rs    editor/command, command policy                (step 2c)
     interrupt.rs  idle tracking, pending jump, :bb-go           (step 2c)
-    annotations.rs  annotations/set                             (step 3)
+    annotations.rs  annotations/*, :bb-annotations              (step 2d)
+    reveal.rs     editor/reveal, the reveal animation           (step 2d)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer
-`method_not_found` and are absent from `capabilities`. Steps 2a, 2b and 2c
-then touch disjoint files and can run in parallel worktrees. In step 1,
+`method_not_found` and are absent from `capabilities`. Steps 2a, 2b, 2c and
+2d then touch disjoint files and can run in parallel worktrees. `reveal.rs`
+is new in 2d. After the merge, `editor/reload` with `reveal` calls into it
+with the ranges its own diff produced. In step 1,
 `editor/open` accepts `interrupt`, `viewId` and `note` but always moves at
 once; step 2c adds the waiting behaviour for every focus-moving method.
 
@@ -224,3 +237,30 @@ paths from the machine it was built on.
 - **Verified by doing it.** The installer is tested in a clean throwaway
   `HOME` on this machine (no Rust on `PATH`, no Helix config) before it is
   called done.
+
+## Integration step (after 2a to 2d are merged)
+
+Work that crosses the pieces, done once on the merged branch:
+
+1. **No redraw for requests that change nothing.** Helix redraws after every
+   job it dispatches to the main loop, so each bridge request costs a frame:
+   0.2 ms on a small file, about 7 ms on a very large one, which is paid by
+   the user's own key presses when a client asks often. Each method declares
+   whether it can change what is on screen; after a read-only one the redraw
+   is skipped. This is the one deliberate change to the main loop: a single
+   condition around the existing `render()` call for dispatched jobs, listed
+   in UPSTREAM_TOUCHPOINTS.md. Rule 2 above otherwise stands.
+2. **Wire the pieces together**: `editor/reload` with `reveal` calls
+   `reveal::play` with the ranges its diff produced; `locations` `goto`,
+   `editor/reveal` `follow` and `editor/reload` `follow` go through the
+   interrupt gate from 2c.
+3. **Kitty keyboard from the environment.** Inside bb, bb's terminal answers
+   the capability query before the editor surface can, so Helix never turns
+   the protocol on. `HELIX_KITTY_KEYBOARD=enabled|disabled` overrides the
+   `kitty-keyboard-protocol` setting at start; the plugin sets it on sessions
+   it starts.
+4. **Full benchmark on a quiet machine**, every row of the performance
+   table, including `lsp/query` overhead on a large Go repository.
+5. **Build hygiene.** Worktrees never share a cargo target directory: cargo
+   then reuses another worktree's build of a crate. Seed each worktree's own
+   `target/` as a copy-on-write clone (`cp -c -R`) instead.

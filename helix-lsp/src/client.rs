@@ -40,6 +40,10 @@ use tokio::{
     },
 };
 
+std::thread_local! {
+    static LAST_REQUEST_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn workspace_for_uri(uri: lsp::Url) -> WorkspaceFolder {
     lsp::WorkspaceFolder {
         name: uri
@@ -283,7 +287,14 @@ impl Client {
 
     fn next_request_id(&self) -> jsonrpc::Id {
         let id = self.request_counter.fetch_add(1, Ordering::Relaxed);
+        LAST_REQUEST_ID.set(id);
         jsonrpc::Id::Num(id)
+    }
+
+    /// The id of the request this thread sent last. Read right after a request method
+    /// returns, it names that request, so the caller can send `$/cancelRequest` for it.
+    pub fn last_request_id() -> u64 {
+        LAST_REQUEST_ID.get()
     }
 
     fn value_into_params(value: Value) -> jsonrpc::Params {
