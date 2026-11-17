@@ -129,6 +129,41 @@ impl Bridge {
     }
 }
 
+/// Wait until the top of the editor is `what`: `"prompt"` (a prompt other
+/// than the `:` line), `":"`, `"picker"`, `"popup"`. Typed commands open
+/// prompts and pickers through the job queue, so keys sent right after
+/// them can arrive first.
+pub async fn until_overlay(what: &str) -> anyhow::Result<()> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let overlays = helix_term::bridge::overlays().await;
+        if overlays.last().map(String::as_str) == Some(what) {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "timed out waiting for a {what}: {overlays:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Wait until the status line reads `want`.
+pub async fn until_status(want: &str) -> anyhow::Result<()> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let status = helix_term::bridge::status().await;
+        if status.as_deref() == Some(want) {
+            return Ok(());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "timed out waiting for status {want:?}: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 // --- client ------------------------------------------------------------------
 
 pub struct Client {
@@ -231,7 +266,8 @@ impl Client {
             let left = deadline.saturating_duration_since(Instant::now());
             let msg = tokio::time::timeout(left, self.read())
                 .await
-                .with_context(|| format!("waiting for {method}"))??;
+                .with_context(|| format!("waiting for {method}"))?
+                .with_context(|| format!("waiting for {method}"))?;
             if msg["method"] == method {
                 return Ok(msg["params"].clone());
             }
@@ -723,12 +759,24 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
             );
 
             // a burst: the first change at once, the rest as one event a
-            // window later, with the final state
+            // window later, with the final state. The five moves are fed in
+            // one turn of the main loop (`editor/command` keys), so how fast
+            // a loaded machine handles key presses cannot spread them over
+            // several windows.
             c.drain(Duration::from_millis(120)).await?;
-            keys.send("jjjkk")?;
+            let id = c
+                .send(
+                    "editor/command",
+                    json!({ "keys": "jjjkk", "interrupt": "always" }),
+                )
+                .await?;
             let first = c.event("event/selection").await?;
-            let t = Instant::now();
             let more = c.drain(Duration::from_millis(250)).await?;
+            ensure!(
+                more.iter()
+                    .any(|m| m["id"] == id && m["result"]["deferred"] == false),
+                "editor/command ran: {more:?}"
+            );
             let sels: Vec<_> = std::iter::once(first)
                 .chain(
                     more.iter()
@@ -741,7 +789,6 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
                 sels.last().unwrap()["ranges"],
                 json!([{ "start": pos(3, 1), "end": pos(3, 1) }])
             );
-            let _ = t;
 
             keys.send("i")?;
             assert_eq!(c.event("event/mode").await?["mode"], "insert");
@@ -776,7 +823,13 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
             }
 
             c.drain(Duration::from_millis(150)).await?;
-            keys.send(&format!(":o {other_path}<ret>"))?;
+            // the path is pasted, not typed: the command line completes
+            // file names on every character typed, which on a loaded
+            // machine (a debug build, a temp directory of hundreds of
+            // files) can take longer than the wait for the event
+            keys.send(":o ")?;
+            keys.event(Event::Paste(other_path.clone()))?;
+            keys.send("<ret>")?;
             let opened = c.event("event/documentOpened").await?;
             assert_eq!(opened["path"], other_path.as_str());
             let focus = c.event("event/focus").await?;
@@ -908,12 +961,12 @@ async fn send_commands_and_bindings() -> anyhow::Result<()> {
 
             // the prompt: Enter emits, Escape cancels
             keys.send(":bb-comment<ret>")?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            until_overlay("prompt").await?;
             keys.send("typed in the prompt: 100% \"literal\"<ret>")?;
             let ev = c.event("event/send").await?;
             assert_eq!(ev["note"], "typed in the prompt: 100% \"literal\"");
             keys.send(":bb-comment<ret>")?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            until_overlay("prompt").await?;
             keys.send("never mind<esc>")?;
             let rest = c.drain(Duration::from_millis(300)).await?;
             assert!(methods(&rest).is_empty(), "escape sends nothing: {rest:?}");
@@ -927,7 +980,7 @@ async fn send_commands_and_bindings() -> anyhow::Result<()> {
             keys.send("<space>bs")?;
             assert_eq!(c.event("event/send").await?["kind"], "send");
             keys.send("<space>bc")?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            until_overlay("prompt").await?;
             keys.send("from a binding<ret>")?;
             let ev = c.event("event/send").await?;
             assert_eq!(
@@ -940,7 +993,7 @@ async fn send_commands_and_bindings() -> anyhow::Result<()> {
             // ... and select mode: two lines selected
             keys.send("gg")?;
             keys.send("vjC")?;
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            until_overlay("prompt").await?;
             keys.send("two lines<ret>")?;
             let ev = c.event("event/send").await?;
             assert_eq!(ev["note"], "two lines");
@@ -994,24 +1047,37 @@ async fn two_clients_and_one_that_stops_reading() -> anyhow::Result<()> {
             keys.send("j")?;
             a.event("event/selection").await?;
 
-            // c subscribes to everything and never reads again
+            // 1000 key presses and back to the top, until a sees it
+            async fn burst(keys: &Keys, a: &mut Client) -> anyhow::Result<Duration> {
+                let started = Instant::now();
+                for _ in 0..50 {
+                    keys.send("jjjjjjjjjjkkkkkkkkkk")?;
+                }
+                keys.send("2ggk")?;
+                loop {
+                    let sel = a.event("event/selection").await?;
+                    if sel["ranges"][0]["start"] == pos(1, 1) {
+                        return Ok(started.elapsed());
+                    }
+                }
+            }
+            keys.send("2gg")?;
+            a.drain(Duration::from_millis(100)).await?;
+            let alone = burst(&keys, &mut a).await?;
+
+            // c subscribes to everything and never reads again: the editor
+            // keeps up as it did without it, and a keeps getting events
             let mut c = Client::connect(&socket).await?;
             c.hello("slow").await?;
             c.subscribe(&["selection", "documents", "mode", "send"])
                 .await?;
-            let started = Instant::now();
-            for _ in 0..50 {
-                keys.send("jjjjjjjjjjkkkkkkkkkk")?;
-            }
-            keys.send("gg")?;
-            // the editor keeps up and a keeps getting events
-            loop {
-                let sel = a.event("event/selection").await?;
-                if sel["ranges"][0]["start"] == pos(1, 1) {
-                    break;
-                }
-            }
-            assert!(started.elapsed() < Duration::from_secs(5));
+            keys.send("2gg")?;
+            a.drain(Duration::from_millis(100)).await?;
+            let stuck = burst(&keys, &mut a).await?;
+            assert!(
+                stuck < alone * 3 + Duration::from_millis(500),
+                "1000 keys took {stuck:?} with a stuck client, {alone:?} without"
+            );
 
             // flood c with requests it never reads the answers to: once its
             // queue is full of responses, the bridge drops it

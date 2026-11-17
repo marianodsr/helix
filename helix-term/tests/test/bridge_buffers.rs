@@ -484,7 +484,7 @@ async fn locations_walk_picker_and_notes() -> anyhow::Result<()> {
         .run(move |keys, socket| async move {
             let mut c = Client::connect(&socket).await?;
             keys.send(":bb-locations tour<ret>")?;
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            super::bridge::until_overlay("picker").await?;
             keys.send("<ret>")?;
             until(&mut c, "the picker's jump", |s| {
                 s["focused"]["path"] == ap2.as_str()
@@ -499,11 +499,9 @@ async fn locations_walk_picker_and_notes() -> anyhow::Result<()> {
         .run(move |keys, socket| async move {
             let _c = Client::connect(&socket).await?;
             keys.send(":bb-next<ret>")?;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(())
+            super::bridge::until_status("'bb-next': No active bb locations list").await
         })
         .await?;
-    assert_eq!(status(&bridge), "'bb-next': No active bb locations list");
     bridge.finish().await?;
     Ok(())
 }

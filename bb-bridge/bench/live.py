@@ -583,22 +583,35 @@ def _verify(args, sb, hx, check):
     # a client that stops reading: selection events overflow, it stays
     # move steadily down the big file: every 50 ms window ends somewhere new
     hx.send(":o main.go" + ENTER + "gg")
+
+    def moving(seconds):
+        """Move the cursor for `seconds`; a's editor/state round trips meanwhile."""
+        end = time.monotonic() + seconds
+        i = 0
+        rtts = []
+        while time.monotonic() < end:
+            hx.send("j", pause=0.025)
+            i += 1
+            if i % 40 == 0:
+                t = time.perf_counter()
+                a.call("editor/state")
+                rtts.append((time.perf_counter() - t) * 1000)
+                a.events.clear()
+        rtts.sort()
+        return rtts
+
+    # the same load without the stuck client first, as a baseline from this
+    # run (a loaded machine is slow in both)
+    base = moving(min(10.0, args.overflow_seconds))
     slow = Client(reg["socket"])
     slow.call("events/subscribe", {"events": ["selection", "documents"]})
     print(f"INFO slow client: moving the cursor for {args.overflow_seconds}s while it reads nothing")
-    end = time.monotonic() + args.overflow_seconds
-    i = 0
-    rtts = []
-    while time.monotonic() < end:
-        hx.send("j", pause=0.025)
-        i += 1
-        if i % 40 == 0:
-            t = time.perf_counter()
-            a.call("editor/state")
-            rtts.append((time.perf_counter() - t) * 1000)
-            a.events.clear()
-    rtts.sort()
-    check(rtts[-1] < 50, "editor stays responsive while a client is stuck", f"max rtt {rtts[-1]:.1f}ms")
+    rtts = moving(args.overflow_seconds)
+    p90 = lambda xs: xs[int(len(xs) * 0.9)]
+    print(f"INFO editor/state while moving: p90 {p90(base):.2f}ms alone, {p90(rtts):.2f}ms with the stuck client"
+          f" (max {base[-1]:.1f}ms, {rtts[-1]:.1f}ms)")
+    check(p90(rtts) < 3 * p90(base) + 5 and rtts[-1] < 500, "editor stays responsive while a client is stuck",
+          f"p90 {p90(rtts):.1f}ms vs {p90(base):.1f}ms alone, max {rtts[-1]:.1f}ms")
     got = slow.drain(1.0)
     overflow = [m for m in got if m.get("method") == "event/overflow"]
     sels = [m for m in got if m.get("method") == "event/selection"]

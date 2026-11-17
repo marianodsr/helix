@@ -249,6 +249,40 @@ pub fn views_drawn() -> u64 {
     VIEWS_DRAWN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Test support: what is open on top of the editor, bottom to top: `":"`
+/// (the command line), `"prompt"` (any other prompt), `"picker"`,
+/// `"popup"`, or a component name.
+#[cfg(feature = "integration")]
+pub async fn overlays() -> Vec<String> {
+    use methods::command::{layers, Layer};
+    dispatch::on_editor(|_, compositor| {
+        layers(compositor, |layers| {
+            layers
+                .iter()
+                .rev()
+                .map(|layer| match layer {
+                    Layer::Prompt { command: true, .. } => ":".to_owned(),
+                    Layer::Prompt { .. } => "prompt".to_owned(),
+                    Layer::Picker { .. } => "picker".to_owned(),
+                    Layer::Popup => "popup".to_owned(),
+                    Layer::Other(name) => (*name).to_owned(),
+                })
+                .collect()
+        })
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Test support: the status line, read on the main loop.
+#[cfg(feature = "integration")]
+pub async fn status() -> Option<String> {
+    dispatch::on_editor(|editor, _| editor.get_status().map(|(m, _)| m.to_string()))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// The socket of this runtime's bridge, if it started.
 pub fn socket_path() -> Option<PathBuf> {
     BRIDGE.get().map(|s| s.info.socket.clone())
