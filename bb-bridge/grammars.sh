@@ -4,6 +4,7 @@
 #
 #   bb-bridge/grammars.sh            # the list below
 #   GRAMMARS="go rust" bb-bridge/grammars.sh
+#   GRAMMARS=all bb-bridge/grammars.sh   # every grammar in languages.toml
 #
 # Uses a throwaway config directory, so the user's languages.toml (and its
 # `use-grammars`) is neither read nor changed.
@@ -22,9 +23,13 @@ gitattributes dockerfile make html css elixir heex eex ruby embedded-template sq
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hxb-grammars.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/config/helix" "$tmp/cache"
-list=""
-for g in $GRAMMARS; do list="$list\"$g\", "; done
-printf 'use-grammars = { only = [ %s ] }\n' "$list" > "$tmp/config/helix/languages.toml"
+if [ "$GRAMMARS" = all ]; then
+    : > "$tmp/config/helix/languages.toml"
+else
+    list=""
+    for g in $GRAMMARS; do list="$list\"$g\", "; done
+    printf 'use-grammars = { only = [ %s ] }\n' "$list" > "$tmp/config/helix/languages.toml"
+fi
 
 export HELIX_RUNTIME="$root/runtime" XDG_CONFIG_HOME="$tmp/config" XDG_CACHE_HOME="$tmp/cache"
 "$hx" --grammar fetch
