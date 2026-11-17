@@ -143,6 +143,7 @@ FLAGS:
             helix_core::config::default_lang_loader()
         });
 
+    let config = helix_term::bridge::kitty_keyboard_from_env(config);
     // TODO: use the thread local executor to spawn the application task separately from the work pool
     let mut app = Application::new(args, config, lang_loader, workspace_trust)
         .context("unable to start Helix")?;

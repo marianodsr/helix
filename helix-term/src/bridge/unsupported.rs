@@ -7,6 +7,10 @@ use crate::commands::typed::TypableCommand;
 
 pub fn start(_editor: &Editor) {}
 
+pub fn kitty_keyboard_from_env(config: crate::config::Config) -> crate::config::Config {
+    config
+}
+
 pub fn stop() {}
 
 pub fn document_saved(_editor: &Editor, _doc: DocumentId) {}

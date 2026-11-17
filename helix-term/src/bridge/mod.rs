@@ -154,6 +154,32 @@ fn enabled(config: bool, env: Option<std::ffi::OsString>) -> bool {
     config && env.is_none_or(|v| v != "0")
 }
 
+/// `HELIX_KITTY_KEYBOARD=enabled|disabled` overrides `kitty-keyboard-protocol`
+/// at start. Inside bb, bb's own terminal answers the capability query
+/// before the editor surface can, so `auto` never turns the protocol on
+/// there; the plugin sets this on the sessions it starts. Called from
+/// `main` before the terminal is set up.
+pub fn kitty_keyboard_from_env(mut config: crate::config::Config) -> crate::config::Config {
+    if let Some(value) = std::env::var_os("HELIX_KITTY_KEYBOARD") {
+        match kitty_keyboard(&value) {
+            Some(setting) => config.editor.kitty_keyboard_protocol = setting,
+            None => log::warn!("HELIX_KITTY_KEYBOARD={value:?} ignored: use enabled or disabled"),
+        }
+    }
+    config
+}
+
+fn kitty_keyboard(
+    value: &std::ffi::OsStr,
+) -> Option<helix_view::editor::KittyKeyboardProtocolConfig> {
+    use helix_view::editor::KittyKeyboardProtocolConfig as Kitty;
+    match value.to_str()? {
+        "enabled" => Some(Kitty::Enabled),
+        "disabled" => Some(Kitty::Disabled),
+        _ => None,
+    }
+}
+
 /// Remove the socket and registry file and drop every client. Called from
 /// `Application::close`.
 pub fn stop() {
@@ -247,6 +273,21 @@ mod tests {
         assert_eq!(long, Path::new(&format!("/tmp/helix-bridge-{uid}/42.sock")));
     }
     use helix_view::editor::{BridgeCommandPolicy, Config};
+
+    #[test]
+    fn kitty_keyboard_values() {
+        use helix_view::editor::KittyKeyboardProtocolConfig as Kitty;
+        assert_eq!(
+            super::kitty_keyboard("enabled".as_ref()),
+            Some(Kitty::Enabled)
+        );
+        assert_eq!(
+            super::kitty_keyboard("disabled".as_ref()),
+            Some(Kitty::Disabled)
+        );
+        assert_eq!(super::kitty_keyboard("auto".as_ref()), None);
+        assert_eq!(super::kitty_keyboard("".as_ref()), None);
+    }
 
     #[test]
     fn env_switch() {
