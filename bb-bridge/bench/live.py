@@ -232,6 +232,7 @@ def verify(args):
         hx.kill()
         if not args.keep:
             sb.cleanup()
+    _verify_2c(args, check)
     print(f"\n{check.passed} passed, {check.failed} failed")
     return 1 if check.failed else 0
 
@@ -252,7 +253,7 @@ def _verify(args, sb, hx, check):
     b = Client(reg["socket"])
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
-    check(hello["capabilities"] == ["editor"] and hello["commandPolicy"] == "safe", "hello", hello)
+    check(hello["capabilities"][0] == "editor" and hello["commandPolicy"] == "safe", "hello", hello)
 
     st = a.call("editor/state")
     check(st["focused"]["path"] == main_go and st["focused"]["languageId"] == "go", "state: focused main.go", st["focused"])
@@ -455,6 +456,119 @@ def _verify(args, sb, hx, check):
         finally:
             h2.kill()
             sb2.cleanup()
+
+
+# --- step 2c: panes, selections, editor/command and its policy, not yanking ---
+
+
+def _verify_2c(args, check):
+    sb = Sandbox()
+    marker = os.path.join(sb.root, "pwned")
+    with open(os.path.join(sb.config_home, "helix", "config.toml"), "a") as f:
+        f.write(f'\n[keys.normal]\nX = ":sh touch {marker}"\nY = "shell_pipe"\n')
+    hx = sb.start(args.hx, files=("main.go",))
+    try:
+        reg = sb.registry(hx.pid)
+        if not check(reg is not None, "2c: registry file written"):
+            return
+        main_go, notes = sb.path("main.go"), sb.path("notes.md")
+        c = Client(reg["socket"])
+        hello = c.call("bridge/hello", {"client": "live-2c"})
+        check({"views", "command"} <= set(hello["capabilities"]), "2c: hello lists views and command", hello)
+        now = {"interrupt": "always"}
+
+        # whole-line ranges: endLine without endCol takes the lines whole, as `x` does
+        sb.write("lines.txt", "first\nnaïve café 🦀\nthird\nfour line, 15ch\nlast\n")
+        sb.write("bare.txt", "first\nnaïve café 🦀\nlast")
+        for rel, line, end, want in (("lines.txt", 3, 5, "third\nfour line, 15ch\nlast\n"), ("lines.txt", 1, 1, "first\n"),
+                                     ("lines.txt", 2, 2, "naïve café 🦀\n"), ("lines.txt", 5, 5, "last\n"),
+                                     ("bare.txt", 3, 3, "last"), ("bare.txt", 2, 3, "naïve café 🦀\nlast")):
+            c.call("editor/open", {"path": rel, "line": line, "endLine": end, **now})
+            got = c.call("editor/selection")["ranges"][0]["text"]
+            check(got == want, f"2c: {rel} lines {line}-{end} whole", repr(got))
+        c.call("editor/select", {"ranges": [{"start": pos(2, 1), "end": {"line": 2, "col": 2**53}}], **now})
+        got = c.call("editor/selection")["ranges"][0]["text"]
+        check(got == "naïve café 🦀", "2c: a huge column clamps to the line end", repr(got))
+        c.call("editor/open", {"path": main_go, **now})
+        m = hx.mark()
+        hx.send(":bb-status" + ENTER, pause=0.2)
+        check(hx.wait_text("offers editor", m) and hx.wait_text("command", m), "2c: :bb-status lists capabilities")
+
+        # panes and selections
+        lst = c.call("view/list")
+        first = lst["views"][0]["viewId"]
+        check(len(lst["views"]) == 1 and lst["layout"] == {"split": "vertical", "children": [{"viewId": first}]},
+              "2c: view/list, one pane", lst)
+        r = c.call("editor/open", {"path": "notes.md", "split": "vertical", **now})
+        lst = c.call("view/list")
+        check(lst["layout"] == {"split": "vertical", "children": [{"viewId": first}, {"viewId": r["viewId"]}]}
+              and lst["views"][1]["focused"] and lst["views"][1]["area"]["x"] > 0, "2c: vsplit in the layout", lst)
+        c.call("view/focus", {"viewId": first, **now})
+        check(c.call("editor/state")["focused"]["path"] == main_go, "2c: view/focus")
+        c.call("editor/select", {"ranges": [{"start": pos(1, 1), "end": pos(1, 8)}, {"start": pos(3, 1), "end": pos(3, 7)}],
+                                 "primary": 1, **now})
+        sel = c.call("editor/selection")
+        check([x["text"] for x in sel["ranges"]] == ["package", "import"] and sel["primary"] == 1, "2c: editor/select", sel)
+        c.call("view/close", {"viewId": r["viewId"]})
+        check(len(c.call("view/list")["views"]) == 1, "2c: view/close")
+
+        # editor/command
+        r = c.call("editor/command", {"typed": "echo hello from 2c", **now})
+        check(r["status"]["message"] == "hello from 2c" and hx.wait_text("hello from 2c"), "2c: typed, status shown", r)
+        r = c.call("editor/command", {"static": "goto_line_end", **now})
+        check(r["deferred"] is False and r["mode"] == "normal", "2c: static", r)
+        r = c.call("editor/command", {"keys": "<space>f", **now})
+        check(r.get("overlay") == "picker", "2c: keys open the picker", r)
+        r = c.call("editor/command", {"keys": "<esc>", **now})
+        check("overlay" not in r, "2c: <esc> closes it", r)
+
+        # the safe policy, by every route
+        for params in ({"typed": f"sh touch {marker}"}, {"typed": f"echo %sh{{touch {marker}}}"},
+                       {"typed": f'echo "%sh{{touch {marker}}}"'}, {"typed": "set bridge.commands all"},
+                       {"static": "shell_pipe"}, {"keys": "X"}, {"keys": "Y"}, {"keys": f"|touch {marker}<ret>"},
+                       {"keys": f":sh touch {marker}<ret>"}, {"keys": "<space>?"}):
+            try:
+                c.call("editor/command", {**params, **now})
+                check(False, f"2c: refused {params}")
+            except RpcError as e:
+                check(e.code == 1007, f"2c: refused {params}", e)
+        time.sleep(0.5)
+        check(not os.path.exists(marker), "2c: no shell ran")
+        c.call("editor/command", {"keys": "ihello<esc>", **now})
+        try:
+            c.call("editor/command", {"typed": "q!", **now})
+            check(False, "2c: q! refused")
+        except RpcError as e:
+            check(e.code == 1007, "2c: q! refused on a modified buffer")
+        check(c.call("editor/state")["focused"]["modified"] is True, "2c: unsaved work kept")
+
+        # not yanking the user
+        time.sleep(1.6)
+        r = c.call("editor/open", {"path": notes})
+        check(r["deferred"] is False, "2c: idle user: open moves at once", r)
+        hx.send("j", pause=0.2)
+        r = c.call("editor/open", {"path": main_go, "line": 40})
+        check(r["deferred"] is True and c.call("editor/state")["focused"]["path"] == notes, "2c: typing user: deferred", r)
+        check(hx.wait_text("bb wants to show main.go:40 (:bb-go)"), "2c: notice on the status line")
+        m = hx.mark()
+        hx.send("k", pause=0.2)
+        check(hx.wait_text("bb wants to show main.go:40", m, timeout=4), "2c: notice shown again after a pause")
+        hx.send(":bb-go" + ENTER, pause=0.3)
+        st = c.call("editor/state")
+        check(st["focused"]["path"] == main_go and st["focused"]["selections"][0]["start"]["line"] == 40,
+              "2c: :bb-go performs it", st["focused"])
+        hx.send("i", pause=0.2)
+        r = c.call("view/focus", {"viewId": first})
+        check(r["deferred"] is False, "2c: focusing the focused pane never waits", r)
+        r = c.call("editor/command", {"typed": "vsplit"})
+        check(r == {"deferred": True}, "2c: insert mode: command deferred", r)
+        hx.esc()
+        hx.send(":qa!" + ENTER)
+        check(hx.wait_exit(), "2c: hx exits")
+    finally:
+        hx.kill()
+        if not args.keep:
+            sb.cleanup()
 
 
 def bench(args):

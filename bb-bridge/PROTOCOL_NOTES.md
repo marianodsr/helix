@@ -20,8 +20,12 @@ should know about.
 - Positions in requests are clamped: a column past the end of a line goes
   to the end of that line (before the line ending), a line past the end of
   the file goes to the end of the text. `line`/`col` below 1 count as 1.
-- `editor/open` with `endLine` but no `endCol` selects through the end of
-  `endLine` (so `line: 10, endLine: 12` selects lines 10 to 12).
+- `editor/open` with `endLine` but no `endCol` selects lines `line` to
+  `endLine` whole, line ending included, as `x` selects them (so `line: 10,
+  endLine: 12` selects lines 10 to 12 and the range ends at `{13, 1}`; on the
+  last line of a file without a final newline it ends at the end of the
+  text). Fixed in step 2c: before, a column past `usize::MAX - start`
+  wrapped and lost the last line.
 
 ## Methods
 

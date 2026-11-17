@@ -243,6 +243,78 @@ async fn views_layout_focus_close_select() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn open_lines(c: &mut Client, path: &str, line: u64, end_line: u64) -> anyhow::Result<Value> {
+    c.call(
+        "editor/open",
+        always(json!({ "path": path, "line": line, "endLine": end_line })),
+    )
+    .await?;
+    let sel = c.call("editor/selection", json!({})).await?;
+    Ok(sel["ranges"][0].clone())
+}
+
+/// `endLine` without `endCol` selects whole lines, as `x` does; explicit
+/// ranges and huge columns go through the same conversion.
+#[tokio::test(flavor = "multi_thread")]
+async fn whole_line_ranges() -> anyhow::Result<()> {
+    let trailing =
+        helpers::temp_file_with_contents("first\nnaïve café 🦀\nthird\nfour line, 15ch\nlast\n")?;
+    let bare = helpers::temp_file_with_contents("first\nnaïve café 🦀\nlast")?;
+    let (pt, pb) = (canonical(trailing.path()), canonical(bare.path()));
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(trailing.path(), None))?;
+    bridge
+        .run(move |_, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            let r = open_lines(&mut c, &pt, 3, 5).await?;
+            assert_eq!(r["text"], "third\nfour line, 15ch\nlast\n", "{r}");
+            assert_eq!((&r["start"], &r["end"]), (&pos(3, 1), &pos(6, 1)));
+            let r = open_lines(&mut c, &pt, 1, 1).await?;
+            assert_eq!(r["text"], "first\n");
+            let r = open_lines(&mut c, &pt, 2, 2).await?;
+            assert_eq!(r["text"], "naïve café 🦀\n");
+            assert_eq!(r["end"], pos(3, 1));
+            let r = open_lines(&mut c, &pt, 5, 5).await?;
+            assert_eq!(r["text"], "last\n");
+            let r = open_lines(&mut c, &pb, 3, 3).await?;
+            assert_eq!(r["text"], "last", "no trailing newline: {r}");
+            let r = open_lines(&mut c, &pb, 2, 3).await?;
+            assert_eq!(r["text"], "naïve café 🦀\nlast");
+            assert_eq!(r["end"], pos(3, 5));
+            let r = open_lines(&mut c, &pb, 2, 99).await?;
+            assert_eq!(r["text"], "naïve café 🦀\nlast", "past the end clamps");
+
+            // explicit ranges, and columns no line has
+            for (range, text) in [
+                (json!({ "start": pos(2, 1), "end": pos(3, 1) }), "naïve café 🦀\n"),
+                (json!({ "start": pos(2, 7), "end": pos(2, 11) }), "café"),
+                (
+                    json!({ "start": pos(1, 1), "end": { "line": 1, "col": u64::MAX } }),
+                    "first",
+                ),
+                (
+                    json!({ "start": pos(2, 1), "end": { "line": u64::MAX, "col": u64::MAX } }),
+                    "naïve café 🦀\nlast",
+                ),
+            ] {
+                c.call("editor/select", always(json!({ "ranges": [range] })))
+                    .await?;
+                let sel = c.call("editor/selection", json!({})).await?;
+                assert_eq!(sel["ranges"][0]["text"], text, "{range}");
+            }
+            let t = c
+                .call(
+                    "editor/text",
+                    json!({ "path": pt, "range": { "start": pos(4, 1), "end": { "line": 4, "col": u64::MAX } } }),
+                )
+                .await?;
+            assert_eq!(t["text"], "four line, 15ch");
+            Ok(())
+        })
+        .await?;
+    bridge.finish().await?;
+    Ok(())
+}
+
 // --- not yanking the user ---------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
@@ -604,7 +676,7 @@ async fn refused(c: &mut Client, params: Value) -> anyhow::Result<Value> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn safe_policy_refuses_every_route_to_a_shell() -> anyhow::Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = super::bridge::bridge_dir()?;
     let m = marker(dir.path(), "pwned");
     let ms = m.0.to_string_lossy().into_owned();
     let file = helpers::temp_file_with_contents("one\ntwo\nthree\n")?;
@@ -885,7 +957,7 @@ async fn safe_policy_keeps_unsaved_work() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_all_runs_everything_and_none_nothing() -> anyhow::Result<()> {
-    let dir = tempfile::tempdir()?;
+    let dir = super::bridge::bridge_dir()?;
     let (m1, m2) = (marker(dir.path(), "typed"), marker(dir.path(), "bound"));
     let mut config = with_keys(&shell_bindings(&m2.0.to_string_lossy()))?;
     config.editor.bridge.commands = helix_view::editor::BridgeCommandPolicy::All;

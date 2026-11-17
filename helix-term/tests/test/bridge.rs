@@ -425,14 +425,15 @@ async fn state_open_text_selection_status() -> anyhow::Result<()> {
                 (&sel["ranges"][0]["start"], &sel["ranges"][0]["end"]),
                 (&pos(3, 6), &pos(3, 9))
             );
-            // endLine without endCol runs to the end of that line
+            // endLine without endCol takes that whole line, line ending included
             c.call(
                 "editor/open",
                 json!({ "path": bp, "line": 1, "endLine": 1 }),
             )
             .await?;
             let sel = c.call("editor/selection", json!({})).await?;
-            assert_eq!(sel["ranges"][0]["text"], "package b");
+            assert_eq!(sel["ranges"][0]["text"], "package b\n");
+            assert_eq!(sel["ranges"][0]["end"], pos(2, 1));
 
             // opening the already-open file switches back to it
             let again = c
@@ -735,6 +736,9 @@ async fn events_selection_documents_mode() -> anyhow::Result<()> {
             assert_eq!(closed["path"], other_path.as_str());
             let focus = c.event("event/focus").await?;
             assert_eq!(focus["path"], path.as_str());
+            // a focus change is followed by the new pane's selection; take it
+            // so it cannot arrive after the unsubscribe below
+            assert_eq!(c.event("event/selection").await?["path"], path.as_str());
 
             // after unsubscribing, nothing more arrives
             let left = c
