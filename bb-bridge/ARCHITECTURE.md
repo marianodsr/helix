@@ -11,6 +11,35 @@ helix-editor/helix. Licence MPL-2.0: changes to upstream files stay published.
 The wire contract is [PROTOCOL.md](PROTOCOL.md). This file says how it is
 built and what "good" means.
 
+## What the user asked for
+
+These are the acceptance criteria; everything else serves them.
+
+1. **Their Helix, unchanged.** Every key binding, theme and language setting
+   in their own `~/.config/helix` works. The fork reads the normal config and
+   adds only typed commands, which they bind themselves.
+2. **bb always knows where they are.** Switching files or moving the cursor
+   in Helix is reflected in bb (current file, line, selection) without the
+   user doing anything, and agents can use it.
+3. **Select, comment, send.** Select lines, write a comment, and send it to
+   the agent, one at a time or several comments in one go.
+4. **A full editor, not a preview.** They will live in it all day inside bb,
+   and will add a file tree later, so the editor surface must take the whole
+   work area when wanted, pass every key through, and stay fast.
+
+5. **The agent can drive the editor.** Asked "take me to the entry point of
+   X", the agent opens the right file in the right pane with the cursor on
+   the line, and can walk the user through several places in order. Beyond
+   that it has full control: anything the user can do from the keyboard, it
+   can do through the bridge.
+
+On the file tree: upstream Helix has a built-in file explorer picker
+(`space e`) but no plugin system; that is still an open pull request
+(helix-editor/helix#8675, branch `steel-event-system` of mattwparas/helix).
+Third-party tree plugins only run there. Keeping this patch additive is what
+lets it be carried onto that branch later; do not rely on anything that would
+make that hard.
+
 ## Two halves
 
 ```
@@ -62,8 +91,18 @@ The fork must stay cheap to rebase, and must not make the editor slower.
 8. **Language-server reuse.** `lsp/query` uses Helix's existing clients and
    their typed request methods (`goto_definition`, `goto_reference`, …).
    No second language server is started by the bridge.
-9. **Security.** Local socket only, directory `0700`, socket `0600`. No
-   method runs shell commands or typed commands on behalf of a client.
+9. **Full control, with two guards.** `editor/command` can run any typed
+   command, named command or key sequence. Guard one is the command policy
+   (PROTOCOL.md): by default no shell-running commands and no discarding of
+   unsaved work, because an agent must not get around bb's permission mode
+   through the editor, and must not lose the user's edits. The policy is
+   enforced inside Helix, so no client can skip it. Guard two is "not
+   yanking the user": focus-moving requests wait while the user is typing.
+   Prefer the structured methods (`editor/open`, `locations/set`, `view/*`,
+   `editor/select`, `editor/applyEdits`) for everything they cover; they are
+   typed, testable and stable across Helix versions. `editor/command` is the
+   escape hatch.
+10. **Security.** Local socket only, directory `0700`, socket `0600`.
 
 ## Module layout (designed so later work does not collide)
 
@@ -79,16 +118,21 @@ helix-term/src/bridge/
     editor.rs     hello, state, open, text, selection, status   (step 1)
     send.rs       :bb-send, :bb-ask, :bb-status commands        (step 1)
     reload.rs     editor/reload, focus-gained check             (step 2a)
-    changes.rs    changes/*, picker and jump commands           (step 2a)
+    locations.rs  locations/*, picker, :bb-next/:bb-prev        (step 2a)
     edits.rs      editor/applyEdits                             (step 2a)
     diagnostics.rs  diagnostics/get                             (step 2b)
     lsp.rs        lsp/servers, lsp/query                        (step 2b)
+    views.rs      view/*, editor/select                         (step 2c)
+    command.rs    editor/command, command policy                (step 2c)
+    interrupt.rs  idle tracking, pending jump, :bb-go           (step 2c)
     annotations.rs  annotations/set                             (step 3)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer
-`method_not_found` and are absent from `capabilities`. Steps 2a and 2b then
-touch disjoint files and can run in parallel worktrees.
+`method_not_found` and are absent from `capabilities`. Steps 2a, 2b and 2c
+then touch disjoint files and can run in parallel worktrees. In step 1,
+`editor/open` accepts `interrupt`, `viewId` and `note` but always moves at
+once; step 2c adds the waiting behaviour for every focus-moving method.
 
 ## Performance targets
 
@@ -142,3 +186,37 @@ The fork is installed as `hxb` (a wrapper that sets `HELIX_RUNTIME` to this
 checkout's `runtime/` and runs `target/release/hx`), so the user's Homebrew
 `hx` is untouched. Grammars are fetched and built once with
 `hx --grammar fetch && hx --grammar build`.
+
+## Distribution: installing on another machine
+
+The owner will install this on a second Mac (Apple silicon). Everything
+needed must be in the two GitHub repositories, and nothing may depend on
+paths from the machine it was built on.
+
+- **Nothing essential untracked.** Source, tests, benchmarks, the wrapper,
+  the installer, the configuration under `bb-bridge/config/` and the plugin
+  are all committed and pushed.
+- **No absolute paths at run time.** `hxb` finds its runtime directory
+  relative to itself. The plugin looks for `hxb` on `PATH` (setting to
+  override) and finds the socket directory from Helix's cache directory.
+- **`bb-bridge/install.sh`**, one command on the target machine:
+  1. installs the editor as `hxb` under `~/.local` (binary plus `runtime/`
+     with grammars and queries): from the prebuilt `aarch64-apple-darwin`
+     archive attached to a GitHub release of the fork when one matches,
+     otherwise by building from source (it checks for the Xcode command line
+     tools and Rust, and says what to install if they are missing);
+  2. copies `bb-bridge/config/helix` to `~/.config/helix` only if that
+     directory does not exist, and otherwise leaves it alone and says so;
+  3. installs the bb plugin from the bb-plugins repository when `bb` is
+     present;
+  4. runs `bb hx doctor`, which checks the binary, the protocol version, the
+     socket directory, and the tools the configuration expects (`gopls`,
+     `goimports`), printing the command for each one that is missing.
+  It is safe to run twice and never deletes anything.
+- **Release archive.** A script builds the release binary, fetches and builds
+  the grammars, and packs `hxb` plus `runtime/` into the archive the
+  installer downloads. It is built on this machine and uploaded with the
+  GitHub CLI; a binary fetched with `curl` is not quarantined by macOS.
+- **Verified by doing it.** The installer is tested in a clean throwaway
+  `HOME` on this machine (no Rust on `PATH`, no Helix config) before it is
+  called done.
