@@ -251,7 +251,9 @@ install_archive() {
     # A browser download is quarantined, and tar passes that on to every file
     # it unpacks; these files were just checked, so clear it on them.
     xattr -dr com.apple.quarantine "$pkg" 2>/dev/null || true
-    got=$("$pkg/hxb" --version 2>&1) || die "the unpacked hxb does not run: $got"
+    # In a scratch HOME: even --version creates ~/.config/helix and ~/.cache/helix.
+    got=$(env HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" XDG_CACHE_HOME="$work/home/.cache" \
+        "$pkg/hxb" --version 2>&1) || die "the unpacked hxb does not run: $got"
     say "    $got"
 
     if [ -d "$dest" ]; then
@@ -321,7 +323,11 @@ install_config() {
     fi
     config_home=${XDG_CONFIG_HOME:-$HOME/.config}
 
-    if [ -e "$config_home/helix" ]; then
+    # Any hx run creates an empty ~/.config/helix; that is no configuration.
+    if [ -d "$config_home/helix" ] && [ -z "$(ls -A "$config_home/helix")" ]; then
+        act cp -R "$config_src/helix/." "$config_home/helix"
+        did "copied the Helix configuration into $config_home/helix (it existed but was empty)"
+    elif [ -e "$config_home/helix" ]; then
         skipped "$config_home/helix exists: left alone (the fork's is in $config_src/helix to compare)"
     else
         act mkdir -p "$config_home"

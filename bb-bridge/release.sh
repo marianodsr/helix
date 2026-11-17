@@ -42,7 +42,6 @@ while [ $# -gt 0 ]; do
 done
 
 say() { printf 'release.sh: %s\n' "$*"; }
-
 die() { printf 'release.sh: %s\n' "$*" >&2; exit 1; }
 
 case $out in /*) ;; ?*) out=$(pwd -P)/$out ;; *) die "--output needs a directory" ;; esac
