@@ -562,11 +562,7 @@ async fn protocol_errors() -> anyhow::Result<()> {
             assert!(r["result"]["mode"].is_string());
 
             assert_eq!(c.error("no/such", json!({})).await?["code"], -32601);
-            for stub in [
-                "view/list",
-                "editor/command",
-                "annotations/set",
-            ] {
+            for stub in ["view/list", "editor/command", "annotations/set"] {
                 assert_eq!(c.error(stub, json!({})).await?["code"], -32601, "{stub}");
             }
             assert_eq!(c.error("editor/state", json!([1])).await?["code"], -32602);
