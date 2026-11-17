@@ -6,6 +6,7 @@
     live.py compat  [--hx PATH] [--config DIR]   # DIR contains helix/config.toml
     live.py lspbench [--hx PATH] [-n 50]          # step 2b, needs ~/go/bin/gopls
     live.py lspbig  --repo DIR --file F --query JSON   # step 2b, a large Go repo
+    live.py redraw  --before BIN [--hx PATH]      # read-only requests skip the redraw
 
 Every run uses a throwaway HOME and XDG directories under $TMPDIR, so the
 user's own Helix config, cache and terminals are never touched. `verify`
@@ -38,6 +39,7 @@ sys.path.insert(0, HERE)
 from bridge_client import Client, RpcError  # noqa: E402
 from rtt import fmt, measure  # noqa: E402
 import live_lsp  # noqa: E402  (step 2b)
+import redraw  # noqa: E402  (integration step)
 
 ESC = "\x1b"
 ENTER = "\r"
@@ -779,6 +781,12 @@ def _verify_2c(args, check):
         hx.esc()
         hx.send(":qa!" + ENTER)
         check(hx.wait_exit(), "2c: hx exits")
+    finally:
+        hx.kill()
+        if not args.keep:
+            sb.cleanup()
+
+
 # --- step 2d: annotations and reveal --------------------------------------------
 
 
@@ -1099,7 +1107,7 @@ def snapshot(directory):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["verify", "bench", "compat", "lspbench", "lspbig"])
+    ap.add_argument("mode", choices=["verify", "bench", "compat", "lspbench", "lspbig", "redraw"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
@@ -1111,9 +1119,11 @@ def main():
     ap.add_argument("--file", help="lspbig: file to open, relative to --repo")
     ap.add_argument("--query", default="{}", help="lspbig: lsp/query params (JSON) with a position in --file")
     ap.add_argument("--symbol", default="Handler", help="lspbig: workspaceSymbols query")
+    ap.add_argument("--before", help="redraw: the binary to compare against")
     args = ap.parse_args()
     modes = {"verify": verify, "bench": bench, "compat": compat,
-             "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox)}
+             "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),
+             "redraw": lambda a: redraw.bench(a, Sandbox)}
     sys.exit(modes[args.mode](args))
 
 
