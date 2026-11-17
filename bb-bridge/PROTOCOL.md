@@ -328,7 +328,7 @@ already runs. Params:
 ```json
 { "kind": "references", "path": "/repo/a.go", "position": {"line": 42, "col": 9},
   "query": "…", "includeDeclaration": true, "limit": 100, "timeoutMs": 10000,
-  "ensure": true }
+  "ensure": true, "previews": true }
 ```
 
 | `kind` | Needs | Result |
@@ -340,9 +340,14 @@ already runs. Params:
 | `incomingCalls`, `outgoingCalls` | `path`, `position` | `{ "calls": [{ "name", "kind", "location" }], … }` |
 | `renamePreview` | `path`, `position`, `newName` | `{ "edits": [{ "path", "range", "newText" }], "files" }`, not applied |
 
-`Location` is `{ "path", "range", "preview" }` where `preview` is the text of
+`Location` is `{ "path", "range", "preview"? }` where `preview` is the text of
 the first line of the range, read from the open buffer or from disk, at most
-200 characters. `Symbol` is `{ "name", "kind", "location", "container"? }`.
+200 characters. `previews` turns it on or off; the default is on for the
+location kinds (`definition`, `typeDefinition`, `implementation`,
+`references`, the calls' `location` and `callSites`) and off for
+`documentSymbols` and `workspaceSymbols`, whose name, kind, container and
+location are the answer. Without previews the field is absent. `Symbol` is
+`{ "name", "kind", "location", "container"? }`.
 
 The server is chosen from the file's language. If the file is not open and
 `ensure` is true (the default), Helix loads it in the background so the server

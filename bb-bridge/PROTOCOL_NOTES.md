@@ -582,6 +582,20 @@ should know about.
   server's order. A `LocationLink` gives its `targetSelectionRange` (the
   name). `preview` is that line without its line ending, at most 200 chars,
   `""` when the file cannot be read. Non-`file:` URIs are dropped.
+- **`previews`** (integration step): default `true` for the location kinds
+  and the calls, `false` for `documentSymbols` and `workspaceSymbols`.
+  When off, `preview` is absent and no preview work is done.
+- **Files that are not open** are read only when the answer needs their
+  text: for previews, or to convert a column the server gave in UTF-8 or
+  UTF-16 code units (a UTF-32 column is already a character count, so
+  nothing is read). Each such file is read once per request, off the main
+  thread, only up to the last line the (paged) answer needs, without
+  building a Rope. The conversion is the same as with the whole text: the
+  column is capped to the line's end, a code unit inside a character counts
+  as that character, a line past the end of the file is the end of the
+  file. Without the text (a UTF-32 server, or a file that cannot be read) a
+  column is taken as given, not capped. Open buffers use their text as the
+  server saw it, as before.
 - Every list result has `total` and `truncated` and honours `limit`
   (0 to 500, default 100) and `offset`.
 - **Symbols**: `kind` is the LSP symbol kind in camel case (`function`,

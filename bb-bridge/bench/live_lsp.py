@@ -266,6 +266,18 @@ def _verify(sb, hx, check):
           "workspaceSymbols: no path, from the focused document's server", r)
     r = q(c, "workspaceSymbols", main_go, query="Square")
     check(any(s["name"] == "Square" and s["location"]["path"] == square_go for s in r["symbols"]), "workspaceSymbols: with a path", r)
+    # previews: off by default for the symbol kinds, on for the location kinds
+    check("preview" not in sym.get("location", {}), "documentSymbols: no preview by default", sym)
+    r = q(c, "documentSymbols", circle_go, previews=True)
+    sym = next((s for s in r["symbols"] if s["name"] == "Círculo"), {})
+    check(sym.get("location", {}).get("preview") == "type Círculo struct{ R float64 }", "documentSymbols: previews on request", sym)
+    r = q(c, "workspaceSymbols", main_go, query="Círculo")
+    sym = next((s for s in r["symbols"] if s["name"] == "Círculo"), {})
+    check(sym.get("location", {}).get("range", {}).get("start") == {"line": 3, "col": 6} and "preview" not in sym["location"],
+          "workspaceSymbols: position from disk, no preview", sym)
+    r = q(c, "definition", main_go, 9, 40, previews=False)
+    check(r["locations"] and "preview" not in r["locations"][0] and r["locations"][0]["range"]["start"] == {"line": 3, "col": 6},
+          "definition: previews false", r)
     r = q(c, "incomingCalls", total_go, 6, 7)
     call = r["calls"][0] if r["calls"] else {}
     check(call.get("name") == "main" and call.get("location", {}).get("path") == main_go

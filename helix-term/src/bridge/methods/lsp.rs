@@ -322,6 +322,9 @@ struct QueryParams {
     /// Add `timing` (server and bridge time) to the result.
     #[serde(default)]
     timing: bool,
+    /// A `preview` line with each location. Default: on for the location
+    /// kinds, off for `documentSymbols` and `workspaceSymbols`.
+    previews: Option<bool>,
 }
 
 /// What to ask, independent of the server.
@@ -802,6 +805,10 @@ async fn run_query(
     kind: QueryKind,
     params: QueryParams,
 ) -> Result<(Value, Times), RpcError> {
+    let previews = params.previews.unwrap_or(!matches!(
+        kind,
+        QueryKind::DocumentSymbols | QueryKind::WorkspaceSymbols
+    ));
     let path = params
         .path
         .as_deref()
@@ -894,7 +901,14 @@ async fn run_query(
     let answered = Instant::now();
     let doc_path = path;
     let result = tokio::task::spawn_blocking(move || {
-        shape(answer, texts, server.encoding, doc_path.as_deref(), page)
+        shape(
+            answer,
+            texts,
+            server.encoding,
+            doc_path.as_deref(),
+            page,
+            previews,
+        )
     })
     .await
     .map_err(|err| RpcError::new(ErrorCode::Unsupported, err.to_string()))?;
@@ -1055,7 +1069,8 @@ fn preview(text: Option<&Rope>, line: u32) -> String {
 struct Location {
     path: String,
     range: Range,
-    preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 /// A location before conversion: the server's path and range.
@@ -1088,25 +1103,192 @@ impl RawLoc {
     }
 }
 
+/// Builds the answer's positions and previews. Open buffers give their text
+/// as the server saw it. A file that is not open is read only when needed
+/// (for a preview, or to convert a position that is not in UTF-32), once
+/// per request, and only up to the last line needed: every item says what
+/// it needs ([`Shaper::want`]) before [`Shaper::load`] reads.
 struct Shaper {
-    texts: Texts,
+    open: HashMap<PathBuf, Rope>,
+    disk: HashMap<PathBuf, Option<DiskLines>>,
+    need: HashMap<PathBuf, u32>,
     enc: OffsetEncoding,
+    previews: bool,
+    /// Files read from disk (tests).
+    reads: usize,
 }
 
 impl Shaper {
-    fn range(&mut self, path: &Path, range: lsp::Range) -> Range {
-        let enc = self.enc;
-        range_from_lsp(self.texts.get(path), range, enc)
+    fn new(texts: Texts, enc: OffsetEncoding, previews: bool) -> Shaper {
+        Shaper {
+            open: texts.open,
+            disk: HashMap::new(),
+            need: HashMap::new(),
+            enc,
+            previews,
+            reads: 0,
+        }
     }
 
-    fn location(&mut self, loc: &RawLoc) -> Location {
-        let enc = self.enc;
-        let text = self.texts.get(&loc.path);
+    /// `range` in `path` will be shaped (with a preview of its first line
+    /// when `preview`).
+    fn want(&mut self, path: &Path, range: lsp::Range, preview: bool) {
+        if self.open.contains_key(path) || (!preview && self.enc == OffsetEncoding::Utf32) {
+            return;
+        }
+        let last = range.start.line.max(range.end.line);
+        let line = self.need.entry(path.to_path_buf()).or_insert(last);
+        *line = (*line).max(last);
+    }
+
+    fn want_loc(&mut self, loc: &RawLoc) {
+        let preview = self.previews;
+        self.want(&loc.path, loc.range, preview);
+    }
+
+    /// Read what [`Shaper::want`] asked for. Off the main thread.
+    fn load(&mut self) {
+        for (path, last) in std::mem::take(&mut self.need) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.disk.entry(path) {
+                self.reads += 1;
+                let lines = read_lines(slot.key(), last as usize);
+                slot.insert(lines);
+            }
+        }
+    }
+
+    fn pos(&self, path: &Path, pos: lsp::Position) -> Position {
+        if let Some(text) = self.open.get(path) {
+            return pos_from_lsp(Some(text), pos, self.enc);
+        }
+        match self.disk.get(path) {
+            Some(Some(lines)) => lines.pos(pos, self.enc),
+            _ => pos_from_lsp(None, pos, self.enc),
+        }
+    }
+
+    fn range(&self, path: &Path, range: lsp::Range) -> Range {
+        // as Helix does: a range that ends before it starts is empty at its end
+        let start = if range.start > range.end {
+            range.end
+        } else {
+            range.start
+        };
+        Range {
+            start: self.pos(path, start),
+            end: self.pos(path, range.end),
+        }
+    }
+
+    fn location(&self, loc: &RawLoc) -> Location {
+        let line = loc.range.start.line;
+        let preview = self.previews.then(|| match self.open.get(&loc.path) {
+            Some(text) => preview(Some(text), line),
+            None => match self.disk.get(&loc.path) {
+                Some(Some(lines)) => lines.preview(line),
+                _ => String::new(),
+            },
+        });
         Location {
             path: loc.path.to_string_lossy().into_owned(),
-            range: range_from_lsp(text, loc.range, enc),
-            preview: preview(text, loc.range.start.line),
+            range: self.range(&loc.path, loc.range),
+            preview,
         }
+    }
+}
+
+/// The first lines of a file that is not open, up to the last one an answer
+/// needs, without line endings.
+struct DiskLines {
+    lines: Vec<String>,
+    /// The file ended within `lines` (its last line is the last one).
+    eof: bool,
+}
+
+/// Read `path` up to 0-based line `last`. `None` when it cannot be read or
+/// is not a file, or when reaching that line takes over `MAX_DISK_READ`.
+fn read_lines(path: &Path, last: usize) -> Option<DiskLines> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let mut out = DiskLines {
+        lines: Vec::new(),
+        eof: false,
+    };
+    let mut buf = Vec::new();
+    let mut total = 0u64;
+    while out.lines.len() <= last {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf).ok()?;
+        total += n as u64;
+        if total > MAX_DISK_READ {
+            return None;
+        }
+        if n == 0 {
+            // after a final line ending (or in an empty file), an empty line
+            out.lines.push(String::new());
+            out.eof = true;
+            break;
+        }
+        let ended = buf.last() == Some(&b'\n');
+        let mut end = buf.len() - ended as usize;
+        if ended && end > 0 && buf[end - 1] == b'\r' {
+            end -= 1;
+        }
+        out.lines
+            .push(String::from_utf8_lossy(&buf[..end]).into_owned());
+        if !ended {
+            out.eof = true;
+            break;
+        }
+    }
+    Some(out)
+}
+
+impl DiskLines {
+    /// As `pos_from_lsp` with the whole text: the column is capped to the
+    /// line's end, a code unit inside a character counts as that character,
+    /// a line past the end of the file is the end of the file.
+    fn pos(&self, pos: lsp::Position, enc: OffsetEncoding) -> Position {
+        let line = pos.line as usize;
+        let Some(text) = self.lines.get(line) else {
+            return match (self.eof, self.lines.last()) {
+                (true, Some(last)) => Position {
+                    line: self.lines.len(),
+                    col: last.chars().count() + 1,
+                },
+                _ => pos_from_lsp(None, pos, enc),
+            };
+        };
+        let units = pos.character as usize;
+        let mut used = 0;
+        let mut col = 0;
+        for ch in text.chars() {
+            let width = match enc {
+                OffsetEncoding::Utf8 => ch.len_utf8(),
+                OffsetEncoding::Utf16 => ch.len_utf16(),
+                OffsetEncoding::Utf32 => 1,
+            };
+            if used + width > units {
+                break;
+            }
+            used += width;
+            col += 1;
+        }
+        Position {
+            line: line + 1,
+            col: col + 1,
+        }
+    }
+
+    fn preview(&self, line: u32) -> String {
+        self.lines
+            .get(line as usize)
+            .map(|l| l.chars().take(PREVIEW_CHARS).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -1141,8 +1323,9 @@ fn shape(
     enc: OffsetEncoding,
     doc: Option<&Path>,
     page: Page,
+    previews: bool,
 ) -> Value {
-    let mut s = Shaper { texts, enc };
+    let mut s = Shaper::new(texts, enc, previews);
     match answer {
         Answer::Goto(response) => {
             let locs = match response {
@@ -1263,6 +1446,8 @@ fn shape(
 
 fn locations(s: &mut Shaper, locs: Vec<RawLoc>, page: Page) -> Value {
     let (locs, total, truncated) = page.apply(locs);
+    locs.iter().for_each(|l| s.want_loc(l));
+    s.load();
     let locations: Vec<Location> = locs.iter().map(|l| s.location(l)).collect();
     json!({ "locations": locations, "total": total, "truncated": truncated })
 }
@@ -1301,6 +1486,13 @@ fn flatten(
 
 fn symbols_json(s: &mut Shaper, symbols: Vec<RawSymbol>, page: Page) -> Value {
     let (symbols, total, truncated) = page.apply(symbols);
+    for sym in &symbols {
+        s.want_loc(&sym.loc);
+        if let Some(extent) = sym.extent {
+            s.want(&sym.loc.path, extent, false);
+        }
+    }
+    s.load();
     let symbols: Vec<Value> = symbols
         .into_iter()
         .map(|sym| {
@@ -1323,6 +1515,14 @@ fn symbols_json(s: &mut Shaper, symbols: Vec<RawSymbol>, page: Page) -> Value {
 
 fn calls_json(s: &mut Shaper, calls: Vec<RawCall>, page: Page) -> Value {
     let (calls, total, truncated) = page.apply(calls);
+    for call in &calls {
+        s.want_loc(&call.loc);
+        call.sites
+            .iter()
+            .take(MAX_CALL_SITES)
+            .for_each(|l| s.want_loc(l));
+    }
+    s.load();
     let calls: Vec<Value> = calls
         .into_iter()
         .map(|call| {
@@ -1400,6 +1600,10 @@ fn rename_json(s: &mut Shaper, edit: lsp::WorkspaceEdit, page: Page) -> Value {
         .collect();
     files.dedup();
     let (edits, total, truncated) = page.apply(edits);
+    for e in &edits {
+        s.want(&e.path, e.range, false);
+    }
+    s.load();
     let edits: Vec<Value> = edits
         .into_iter()
         .map(|e| {
@@ -1583,6 +1787,120 @@ mod tests {
         }
     }
 
+    /// A file that is not open, read in part, converts positions exactly as
+    /// the whole text in a Rope does, in every encoding.
+    #[test]
+    fn disk_lines_convert_as_the_rope_does() {
+        let dir = tempfile::tempdir().unwrap();
+        for (i, text) in [
+            "a🦀bc\nx := 🦀é\n\tend",
+            "crlf é\r\nnext 🦀 line\r\n",
+            "",
+            "one line, final newline\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = dir.path().join(format!("f{i}.go"));
+            std::fs::write(&path, text).unwrap();
+            for enc in [
+                OffsetEncoding::Utf8,
+                OffsetEncoding::Utf16,
+                OffsetEncoding::Utf32,
+            ] {
+                let open = Texts::new([(path.clone(), Rope::from(text))].into());
+                let rope = Shaper::new(open, enc, true);
+                let mut disk = Shaper::new(Texts::new(HashMap::new()), enc, true);
+                for line in 0..5 {
+                    disk.want(&path, lsp::Range::new(lp(line, 0), lp(line, 0)), true);
+                }
+                disk.load();
+                for line in 0..5 {
+                    for ch in 0..14 {
+                        assert_eq!(
+                            disk.pos(&path, lp(line, ch)),
+                            rope.pos(&path, lp(line, ch)),
+                            "{text:?} {enc:?} {line}:{ch}"
+                        );
+                    }
+                    let loc = RawLoc {
+                        path: path.clone(),
+                        range: lsp::Range::new(lp(line, 0), lp(line, 1)),
+                    };
+                    assert_eq!(
+                        disk.location(&loc).preview,
+                        rope.location(&loc).preview,
+                        "{text:?} {line}"
+                    );
+                }
+                assert_eq!(disk.reads, 1, "once per file");
+            }
+        }
+    }
+
+    #[test]
+    fn disk_lines_stop_at_the_last_line_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.go");
+        let text: String = (0..1000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        let lines = read_lines(&path, 4).unwrap();
+        assert_eq!(lines.lines.len(), 5);
+        assert!(!lines.eof);
+        assert_eq!(lines.lines[4], "line 4");
+        assert!(read_lines(&dir.path().join("nope"), 0).is_none());
+        assert!(read_lines(dir.path(), 0).is_none(), "a directory");
+    }
+
+    /// Symbols without previews in UTF-32 need no text at all; with UTF-16
+    /// each file is read once, however many symbols point into it.
+    #[test]
+    fn symbols_read_files_only_when_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.go"), dir.path().join("b.go"));
+        std::fs::write(&a, "package a\nfunc Ä() {}\nfunc B() {}\n").unwrap();
+        std::fs::write(&b, "package b\nfunc C() {}\n").unwrap();
+        let symbol = |path: &Path, line: u32, ch: u32| RawSymbol {
+            name: "x".into(),
+            kind: lsp::SymbolKind::FUNCTION,
+            loc: RawLoc {
+                path: path.to_path_buf(),
+                range: lsp::Range::new(lp(line, ch), lp(line, ch + 1)),
+            },
+            container: None,
+            extent: None,
+        };
+        let page = Page {
+            limit: 10,
+            offset: 0,
+        };
+        let symbols = || vec![symbol(&a, 1, 5), symbol(&a, 2, 5), symbol(&b, 1, 5)];
+
+        let mut s = Shaper::new(Texts::new(HashMap::new()), OffsetEncoding::Utf32, false);
+        let v = symbols_json(&mut s, symbols(), page);
+        assert_eq!(s.reads, 0);
+        assert!(v["symbols"][0]["location"].get("preview").is_none());
+        assert_eq!(
+            v["symbols"][0]["location"]["range"]["start"],
+            json!(p(2, 6))
+        );
+
+        let mut s = Shaper::new(Texts::new(HashMap::new()), OffsetEncoding::Utf16, false);
+        let v = symbols_json(&mut s, symbols(), page);
+        assert_eq!(s.reads, 2, "one read per file");
+        assert!(v["symbols"][0]["location"].get("preview").is_none());
+
+        let mut s = Shaper::new(Texts::new(HashMap::new()), OffsetEncoding::Utf8, true);
+        let v = symbols_json(&mut s, symbols(), page);
+        assert_eq!(s.reads, 2);
+        // `Ä` is two UTF-8 bytes: byte 5 is the char at col 6
+        assert_eq!(v["symbols"][0]["location"]["preview"], "func Ä() {}");
+        assert_eq!(
+            v["symbols"][0]["location"]["range"]["start"],
+            json!(p(2, 6))
+        );
+    }
+
     fn texts(path: &str, text: &str) -> Texts {
         Texts::new([(PathBuf::from(path), Rope::from(text))].into())
     }
@@ -1605,6 +1923,7 @@ mod tests {
                 limit: 10,
                 offset: 0,
             },
+            true,
         );
         assert_eq!(v["total"], 2, "sorted and deduplicated: {v}");
         assert_eq!(v["truncated"], false);
@@ -1651,6 +1970,7 @@ mod tests {
                 limit: 10,
                 offset: 0,
             },
+            true,
         );
         assert_eq!(v["total"], 2);
         assert_eq!(v["symbols"][0]["name"], "Shape");
@@ -1709,6 +2029,7 @@ mod tests {
                 limit: 10,
                 offset: 0,
             },
+            true,
         );
         assert_eq!(v["files"], json!(["/r/a.go", "/r/b.go"]));
         assert_eq!(v["edits"][0]["path"], "/r/a.go");
