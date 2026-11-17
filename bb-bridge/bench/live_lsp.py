@@ -412,8 +412,9 @@ def stats(xs):
 
 
 def overhead(c, params, n):
-    """Round trip vs the server's own time, as the bridge measured it."""
-    rtt, server, total = [], [], []
+    """Round trip vs the server's own time (request handed to Helix's client
+    until its answer arrived), as the bridge measured it."""
+    rtt, server, issue, shape = [], [], [], []
     for _ in range(5):
         c.call("lsp/query", dict(params, timing=True))
     for _ in range(n):
@@ -421,9 +422,10 @@ def overhead(c, params, n):
         r = c.call("lsp/query", dict(params, timing=True))
         rtt.append((time.perf_counter() - t) * 1000)
         server.append(r["timing"]["serverMs"])
-        total.append(r["timing"]["totalMs"])
+        issue.append(r["timing"]["issueMs"])
+        shape.append(r["timing"]["shapeMs"])
     return {"rtt": stats(rtt), "server": stats(server), "overhead": stats([a - b for a, b in zip(rtt, server)]),
-            "inside": stats([a - b for a, b in zip(total, server)])}
+            "issue": stats(issue), "shape": stats(shape)}
 
 
 def bench(args, Sandbox):
@@ -461,7 +463,8 @@ def bench(args, Sandbox):
             r = overhead(c, params, args.n)
             results[label] = r
             print(f"{label:<32} rtt p50 {r['rtt']['p50']:7.3f}  server p50 {r['server']['p50']:7.3f}  "
-                  f"overhead p50 {r['overhead']['p50']:.3f} p90 {r['overhead']['p90']:.3f} max {r['overhead']['max']:.3f} ms")
+                  f"overhead p50 {r['overhead']['p50']:.3f} p90 {r['overhead']['p90']:.3f} max {r['overhead']['max']:.3f} ms "
+                  f"(issue p50 {r['issue']['p50']:.3f} p90 {r['issue']['p90']:.3f}, shape p50 {r['shape']['p50']:.3f})")
         # diagnostics/get on a few thousand diagnostics
         deadline = time.monotonic() + 120
         total = 0

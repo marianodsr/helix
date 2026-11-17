@@ -397,6 +397,8 @@ impl Drop for CancelOnDrop {
 struct Pending {
     request: BoxFuture<'static, helix_lsp::Result<Answer>>,
     cancel: CancelOnDrop,
+    /// When the request was handed to Helix's client.
+    sent: Instant,
 }
 
 impl Pending {
@@ -410,6 +412,7 @@ impl Pending {
                 id: Client::last_request_id(),
                 armed: true,
             },
+            sent: Instant::now(),
         }
     }
 
@@ -766,7 +769,7 @@ pub fn query(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
             .clamp(1, MAX_TIMEOUT_MS);
         let timing = params.timing;
         let run = run_query(cx, kind, params);
-        let (mut result, server_time) =
+        let (mut result, times) =
             match tokio::time::timeout(Duration::from_millis(timeout_ms), run).await {
                 Ok(result) => result?,
                 Err(_) => {
@@ -777,9 +780,12 @@ pub fn query(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 }
             };
         if timing {
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
             result["timing"] = json!({
-                "serverMs": server_time.as_secs_f64() * 1e3,
-                "totalMs": begin.elapsed().as_secs_f64() * 1e3,
+                "issueMs": ms(times.sent.duration_since(begin)),
+                "serverMs": ms(times.answered.duration_since(times.sent)),
+                "shapeMs": ms(times.shaped.duration_since(times.answered)),
+                "totalMs": ms(begin.elapsed()),
             });
         }
         Ok(result)
@@ -792,7 +798,7 @@ async fn run_query(
     cx: Ctx,
     kind: QueryKind,
     params: QueryParams,
-) -> Result<(Value, Duration), RpcError> {
+) -> Result<(Value, Times), RpcError> {
     let path = params
         .path
         .as_deref()
@@ -873,7 +879,7 @@ async fn run_query(
         }
     };
 
-    let asked = Instant::now();
+    let sent = pending.sent;
     let client = server.client.clone();
     let mut answer = pending
         .wait()
@@ -882,7 +888,7 @@ async fn run_query(
     if let Answer::Prepare(items) = answer {
         answer = calls(&client, kind, items.unwrap_or_default()).await?;
     }
-    let server_time = asked.elapsed();
+    let answered = Instant::now();
     let doc_path = path;
     let result = tokio::task::spawn_blocking(move || {
         shape(answer, texts, server.encoding, doc_path.as_deref(), page)
@@ -890,7 +896,20 @@ async fn run_query(
     .await
     .map_err(|err| RpcError::new(ErrorCode::Unsupported, err.to_string()))?;
     drop(loaded);
-    Ok((result, server_time))
+    let times = Times {
+        sent,
+        answered,
+        shaped: Instant::now(),
+    };
+    Ok((result, times))
+}
+
+/// For `timing`: request handed to Helix's client, answer received (both
+/// steps for call hierarchy), result built.
+struct Times {
+    sent: Instant,
+    answered: Instant,
+    shaped: Instant,
 }
 
 /// The second step of a call-hierarchy query, for every prepared item.

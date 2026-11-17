@@ -27,6 +27,9 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
 | `helix-term/tests/integration.rs` | 19–20, 23–25 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-lsp/src/client.rs` | 43–46, 290, 294–299 | thread-local `LAST_REQUEST_ID`, set in `next_request_id`; `pub fn Client::last_request_id()` (step 2b) | Helix never sends `$/cancelRequest` and does not expose request ids. Read right after a typed request method returns (same thread, nothing in between), it names that request, so `lsp/query` can cancel it on timeout or `$/cancel` while still using Helix's own methods. No behaviour change for Helix. |
+| `helix-term/src/application.rs` | 849 | `crate::bridge::diagnostics_published(&uri);` in the `publishDiagnostics` handler (step 2b) | `DiagnosticsDidChange` only fires for open documents; servers like gopls publish for the whole workspace, and `event/diagnostics` covers those paths too. One relaxed atomic load when nobody subscribed. (Shifts the `close` hunk above to 1351.) |
+| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_lsp;` (Unix, step 2b) | Diagnostics and `lsp/*` integration tests. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.
@@ -45,6 +48,9 @@ Checked against the tip of `steel-event-system` (mattwparas/helix,
 | `typed.rs` `complete_command_line`, `commands.rs` `command_palette` | **Conflict, small**: steel rewrites these same expressions to chain its scripting-engine commands. Add the bridge chain next to steel's. |
 | `helix-term/Cargo.toml` | **Conflict, trivial**: different neighbouring lines (steel adds its features and dependencies); the tokio line itself is unchanged there. |
 | `Cargo.lock` | Regenerate. |
+
+The step 2b hunks (`helix-lsp/src/client.rs`, the `publishDiagnostics`
+line in `application.rs`) were not checked against that branch.
 
 None of the bridge's own files exist on that branch. A later port is a
 rebase with four small manual merges, all in lines that list commands or
