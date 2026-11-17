@@ -48,6 +48,10 @@ const MAX_ITEMS: usize = 500;
 const DEFAULT_LIMIT: usize = 100;
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
+/// Reading files that are not open for an answer: at most this many
+/// threads, each with at least this many files.
+const MAX_READ_THREADS: usize = 8;
+const FILES_PER_THREAD: usize = 4;
 /// Longest `preview`, in chars.
 const PREVIEW_CHARS: usize = 200;
 /// Call sites listed per call.
@@ -1146,14 +1150,51 @@ impl Shaper {
         self.want(&loc.path, loc.range, preview);
     }
 
-    /// Read what [`Shaper::want`] asked for. Off the main thread.
+    /// Read what [`Shaper::want`] asked for. Off the main thread; many
+    /// files (a workspace symbol search points into up to a hundred) are
+    /// read on a few threads at once.
     fn load(&mut self) {
-        for (path, last) in std::mem::take(&mut self.need) {
-            if let std::collections::hash_map::Entry::Vacant(slot) = self.disk.entry(path) {
-                self.reads += 1;
-                let lines = read_lines(slot.key(), last as usize);
-                slot.insert(lines);
+        let todo: Vec<(PathBuf, usize)> = std::mem::take(&mut self.need)
+            .into_iter()
+            .filter(|(path, _)| !self.disk.contains_key(path))
+            .map(|(path, last)| (path, last as usize))
+            .collect();
+        self.reads += todo.len();
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(MAX_READ_THREADS)
+            .min(todo.len().div_ceil(FILES_PER_THREAD));
+        if threads <= 1 {
+            for (path, last) in todo {
+                let lines = read_lines(&path, last);
+                self.disk.insert(path, lines);
             }
+            return;
+        }
+        let chunk = todo.len().div_ceil(threads);
+        let read: Vec<Vec<Option<DiskLines>>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = todo
+                .chunks(chunk)
+                .map(|part| {
+                    let handle = scope.spawn(move || {
+                        part.iter()
+                            .map(|(path, last)| read_lines(path, *last))
+                            .collect::<Vec<_>>()
+                    });
+                    (part.len(), handle)
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|(len, h)| {
+                    // a part that failed counts as unreadable, in place
+                    h.join()
+                        .unwrap_or_else(|_| (0..len).map(|_| None).collect())
+                })
+                .collect()
+        });
+        for ((path, _), lines) in todo.into_iter().zip(read.into_iter().flatten()) {
+            self.disk.insert(path, lines);
         }
     }
 
@@ -1899,6 +1940,50 @@ mod tests {
             v["symbols"][0]["location"]["range"]["start"],
             json!(p(2, 6))
         );
+    }
+
+    /// Many files are read on several threads; each answer still gets its
+    /// own file's text.
+    #[test]
+    fn many_files_read_in_parallel_keep_their_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<PathBuf> = (0..40)
+            .map(|i| {
+                let path = dir.path().join(format!("f{i}.go"));
+                let pad = "é".repeat(i);
+                std::fs::write(&path, format!("package f\nfunc {pad}F{i}() {{}}\n")).unwrap();
+                path
+            })
+            .collect();
+        let symbols = paths
+            .iter()
+            .enumerate()
+            .map(|(i, path)| RawSymbol {
+                name: format!("F{i}"),
+                kind: lsp::SymbolKind::FUNCTION,
+                // the previews show which file each one got
+                loc: RawLoc {
+                    path: path.clone(),
+                    range: lsp::Range::new(lp(1, 5 + i as u32), lp(1, 6 + i as u32)),
+                },
+                container: None,
+                extent: None,
+            })
+            .collect();
+        let mut s = Shaper::new(Texts::new(HashMap::new()), OffsetEncoding::Utf8, true);
+        let v = symbols_json(
+            &mut s,
+            symbols,
+            Page {
+                limit: 100,
+                offset: 0,
+            },
+        );
+        assert_eq!(s.reads, 40);
+        for (i, sym) in v["symbols"].as_array().unwrap().iter().enumerate() {
+            let pad = "é".repeat(i);
+            assert_eq!(sym["location"]["preview"], format!("func {pad}F{i}() {{}}"));
+        }
     }
 
     fn texts(path: &str, text: &str) -> Texts {
