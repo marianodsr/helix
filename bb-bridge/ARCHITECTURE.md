@@ -186,3 +186,37 @@ The fork is installed as `hxb` (a wrapper that sets `HELIX_RUNTIME` to this
 checkout's `runtime/` and runs `target/release/hx`), so the user's Homebrew
 `hx` is untouched. Grammars are fetched and built once with
 `hx --grammar fetch && hx --grammar build`.
+
+## Distribution: installing on another machine
+
+The owner will install this on a second Mac (Apple silicon). Everything
+needed must be in the two GitHub repositories, and nothing may depend on
+paths from the machine it was built on.
+
+- **Nothing essential untracked.** Source, tests, benchmarks, the wrapper,
+  the installer, the configuration under `bb-bridge/config/` and the plugin
+  are all committed and pushed.
+- **No absolute paths at run time.** `hxb` finds its runtime directory
+  relative to itself. The plugin looks for `hxb` on `PATH` (setting to
+  override) and finds the socket directory from Helix's cache directory.
+- **`bb-bridge/install.sh`**, one command on the target machine:
+  1. installs the editor as `hxb` under `~/.local` (binary plus `runtime/`
+     with grammars and queries): from the prebuilt `aarch64-apple-darwin`
+     archive attached to a GitHub release of the fork when one matches,
+     otherwise by building from source (it checks for the Xcode command line
+     tools and Rust, and says what to install if they are missing);
+  2. copies `bb-bridge/config/helix` to `~/.config/helix` only if that
+     directory does not exist, and otherwise leaves it alone and says so;
+  3. installs the bb plugin from the bb-plugins repository when `bb` is
+     present;
+  4. runs `bb hx doctor`, which checks the binary, the protocol version, the
+     socket directory, and the tools the configuration expects (`gopls`,
+     `goimports`), printing the command for each one that is missing.
+  It is safe to run twice and never deletes anything.
+- **Release archive.** A script builds the release binary, fetches and builds
+  the grammars, and packs `hxb` plus `runtime/` into the archive the
+  installer downloads. It is built on this machine and uploaded with the
+  GitHub CLI; a binary fetched with `curl` is not quarantined by macOS.
+- **Verified by doing it.** The installer is tested in a clean throwaway
+  `HOME` on this machine (no Rust on `PATH`, no Helix config) before it is
+  called done.

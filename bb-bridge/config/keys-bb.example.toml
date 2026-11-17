@@ -1,0 +1,17 @@
+# Suggested key bindings for the bridge commands. Nothing here is applied
+# automatically: copy the lines you want into ~/.config/helix/config.toml.
+# Every bridge command is an ordinary typed command, so any key works.
+
+[keys.normal.space.b]
+s = ":bb-send"            # selection (or current line) to the thread's composer
+c = ":bb-comment"         # comment on the selection; opens a prompt
+C = ":bb-comments-send"   # send all pending comments to the agent
+n = ":bb-next"            # next place in the active list (agent changes, tour)
+p = ":bb-prev"
+l = ":bb-locations"       # browse the active list
+g = ":bb-go"              # accept a jump the agent asked for while you typed
+i = ":bb-status"
+
+[keys.select.space.b]
+s = ":bb-send"
+c = ":bb-comment"
