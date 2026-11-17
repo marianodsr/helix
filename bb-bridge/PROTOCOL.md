@@ -366,7 +366,8 @@ inline diff is switched off. `review/state` (`{}`) returns `{ "active", "id",
 "title", "base", "inline", "files": <count> }`.
 
 A deleted file has no buffer to show: choosing it in the picker opens its
-text at the base in a read-only scratch buffer named `<path> (deleted)`.
+text at the base in a read-only scratch buffer without a path (so it cannot
+be written), named `<path> (deleted)` on the status line.
 
 Capability `review`.
 

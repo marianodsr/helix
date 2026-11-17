@@ -328,6 +328,21 @@ async fn review_errors_events_and_commands() -> anyhow::Result<()> {
                 .await?;
             assert_eq!(err["code"], 1007);
             assert_eq!(err["data"]["reason"], "unknown revision");
+            // only a full commit id
+            for rev in ["main", "HEAD~1", "0123456", ""] {
+                let err = c
+                    .error(
+                        "review/set",
+                        json!({ "id": "x", "base": { "rev": rev }, "files": files }),
+                    )
+                    .await?;
+                assert_eq!(err["code"], -32602, "{rev}");
+                assert_eq!(err["data"]["field"], "base");
+                assert!(
+                    err["message"].as_str().unwrap().contains("needs a full commit id"),
+                    "{err}"
+                );
+            }
             let err = c.error("review/set", json!({ "id": "", "files": [] })).await?;
             assert_eq!(err["data"]["field"], "id");
             // a file outside any repository
@@ -424,15 +439,26 @@ async fn uncommitted_without_a_client_and_the_picker() -> anyhow::Result<()> {
         .await?;
     {
         let doc = doc!(bridge.app.editor);
-        let name = format!("{} (deleted)", gone.display());
-        assert_eq!(
-            doc.path().map(|p| p.to_string_lossy().into_owned()),
-            Some(name)
-        );
+        // no path: `:w` cannot write a file named after it
+        assert_eq!(doc.path(), None);
+        let (status, _) = bridge
+            .app
+            .editor
+            .get_status()
+            .expect("named on the status line");
+        assert!(status.contains("gone.txt (deleted)"), "{status}");
         assert!(doc.readonly);
         assert_eq!(doc.text().to_string(), "deleted one\ndeleted two\n");
         assert!(!doc.is_modified());
     }
+    // `:w` refuses: there is no file name to write
+    bridge
+        .run(|keys, _| async move {
+            keys.send(":w<ret>")?;
+            until_status("Error saving: Can't save with no path set!").await
+        })
+        .await?;
+    assert!(!gone.exists(), "nothing written");
     // Enter on a changed file opens it at its first change
     bridge
         .run(|keys, _| async move {

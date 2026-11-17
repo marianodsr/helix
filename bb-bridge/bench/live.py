@@ -1104,8 +1104,8 @@ def _verify_review(sb, hx, check, base):
     m = hx.mark()
     hx.send("gone" + ENTER, pause=0.6)
     st = c.call("editor/state", {})
-    check(st["focused"]["path"] == gone + " (deleted)" or st["focused"]["path"].endswith("gone.txt (deleted)"),
-          "review: a deleted file opens as '<path> (deleted)'", st["focused"]["path"])
+    check(st["focused"]["path"] is None and hx.wait_text("gone.txt (deleted)", m),
+          "review: a deleted file opens as a scratch buffer named on the status line", st["focused"]["path"])
     t = c.call("editor/text", {"docId": st["focused"]["docId"]})
     check(t["text"] == "LIVE-GONE-TEXT\n", "review: with its text at the base", t["text"])
     c.call("editor/open", {"path": path, "interrupt": "always"})

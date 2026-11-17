@@ -203,6 +203,8 @@ runtime_local! {
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     /// One rebase at a time, in the order they were asked for.
     static REBASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// The scratch buffer showing each deleted file, to reuse it.
+    static DELETED: Mutex<HashMap<PathBuf, DocumentId>> = Mutex::new(HashMap::new());
 }
 
 /// `[editor.bridge] inline-diff`: the inline diff's state at start. Called
@@ -471,11 +473,18 @@ pub fn set(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 format!("at most {MAX_FILES} files"),
             ));
         }
-        if params.base.as_ref().is_some_and(|b| b.rev.is_empty()) {
-            return Err(RpcError::invalid_params(
-                "base",
-                "base.rev must not be empty",
-            ));
+        if let Some(base) = &params.base {
+            let rev = &base.rev;
+            let full = matches!(rev.len(), 40 | 64) && rev.bytes().all(|b| b.is_ascii_hexdigit());
+            if !full {
+                return Err(RpcError::invalid_params(
+                    "base",
+                    format!(
+                        "base.rev needs a full commit id (40 hex characters), \
+                         not a branch, tag or abbreviation: {rev:?}"
+                    ),
+                ));
+            }
         }
         let root = cx.shared.info.workspace_root.clone();
         let files: Vec<File> = params
@@ -1136,9 +1145,15 @@ impl Component for ReviewPicker {
 /// at the base, in a read-only scratch buffer).
 fn open_file(editor: &mut Editor, file: &File, index: usize, total: usize, action: Action) {
     let status = format!(
-        "review {}/{total}: {} +{} -{}",
+        "review {}/{total}: {}{} +{} -{}",
         index + 1,
         helix_stdx::path::get_relative_path(&file.path).display(),
+        // its buffer has no path; this names it
+        if file.status == Status::Deleted {
+            " (deleted)"
+        } else {
+            ""
+        },
         file.additions,
         file.deletions
     );
@@ -1232,12 +1247,18 @@ fn goto_first_change(editor: &mut Editor, doc_id: DocumentId) -> bool {
     true
 }
 
-/// A read-only scratch buffer named `<path> (deleted)` with the file's text
-/// at the base, highlighted as the file was.
+/// A read-only scratch buffer with the file's text at the base, highlighted
+/// as the file was. It has no path, so `:w` cannot write a file by any name
+/// (Helix refuses a buffer without a filename); the status line names it.
 fn open_deleted(editor: &mut Editor, path: &Path, bytes: &[u8], action: Action) {
-    let name = PathBuf::from(format!("{} (deleted)", path.display()));
-    if let Some(id) = editor.document_id_by_path(&name) {
+    let notice = format!(
+        "{} (deleted): its text at the review's base, not a file",
+        helix_stdx::path::get_relative_path(path).display()
+    );
+    let open = DELETED.lock().get(path).copied();
+    if let Some(id) = open.filter(|id| editor.document(*id).is_some()) {
         editor.switch(id, action);
+        editor.set_status(notice);
         return;
     }
     let Ok((text, ..)) = helix_view::document::from_reader(&mut &bytes[..], None) else {
@@ -1258,10 +1279,12 @@ fn open_deleted(editor: &mut Editor, path: &Path, bytes: &[u8], action: Action) 
     doc.reset_modified();
     doc.set_path(Some(path));
     let language = doc.detect_language_config(&loader);
-    doc.set_path(Some(&name));
+    doc.set_path(None);
     doc.set_language(language, &loader);
     doc.readonly = true;
     doc.set_selection(view.id, Selection::point(0));
+    DELETED.lock().insert(path.to_path_buf(), doc.id());
+    editor.set_status(notice);
 }
 
 // --- drawing -------------------------------------------------------------------

@@ -729,10 +729,11 @@ should know about.
 ### review/set, review/clear, review/state
 
 - **`base.rev`** is a full object id (40 hex digits; 64 in a SHA-256
-  repository), peeled to a commit. Short ids and names (`main`, `HEAD~1`)
-  are `unsupported` with `data.reason: "unknown revision"`, like a commit
-  the repository does not have; the client resolves names. An empty `rev` is
-  `invalid_params` (`field: "base"`).
+  repository), peeled to a commit. Anything else (short ids, names such as
+  `main` or `HEAD~1`, an empty `rev`) is `invalid_params` (`field: "base"`)
+  with a message saying a full commit id is needed; the client resolves
+  names. A full id the repository does not have is `unsupported` with
+  `data.reason: "unknown revision"`.
 - **The repository** is the one holding the first listed file (its nearest
   existing directory), or `workspaceRoot` when `files` is empty. Not in a
   git work tree: `unsupported`, `data.reason: "not a git repository"`.
@@ -807,10 +808,13 @@ should know about.
   opens the file with its first change selected, as `[g` does; a file
   opened just then waits up to 1 s for Helix's diff, unless the user moves
   first. The status line reads `review <i>/<n>: <path> +a -d`.
-- **A deleted file** opens as a scratch buffer named `<path> (deleted)`
-  holding its text at the base, highlighted as the file's language, not
-  modified, and marked read-only (`[readonly]` in the status line). Helix
-  does not stop edits to it, and `:w` would write a file of that name.
+- **A deleted file** opens as a scratch buffer holding its text at the
+  base, highlighted as the file's language, not modified, marked read-only
+  (`[readonly]` in the status line), and without a path: `:w` fails with
+  Helix's "no filename" error instead of writing a file, and the status
+  line names it, `<path> (deleted): its text at the review's base, not a
+  file`. The same deleted file reuses its buffer. Helix does not stop edits
+  to it (they go nowhere).
 - **`:bb-review <target>`** with a client subscribed to `review`:
   `event/review { target, path, docId }` (`path` null for a scratch
   buffer) and the status `Asked bb for the <target> review`. `off` also
