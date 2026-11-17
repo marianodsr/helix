@@ -586,6 +586,24 @@ def big(args, Sandbox):
                 print("first query:", e)
                 time.sleep(2)
         print(f"first query answered after {time.monotonic() - t0:.1f}s")
+        if args.settle:
+            # gopls keeps type-checking the workspace after its first answer,
+            # and its messages are handled on Helix's main thread: wait until
+            # it has been idle (under 2% CPU) for 10 s, at most --settle s
+            t0 = time.monotonic()
+            quiet_since = None
+            while time.monotonic() - t0 < args.settle:
+                cpu = sum(float(subprocess.run(["ps", "-o", "%cpu=", "-p", str(k)], capture_output=True,
+                                               text=True).stdout.strip() or 0) for k in children(hx.pid))
+                now = time.monotonic()
+                if cpu < 2.0:
+                    quiet_since = quiet_since or now
+                    if now - quiet_since >= 10:
+                        break
+                else:
+                    quiet_since = None
+                time.sleep(1)
+            print(f"settled after {time.monotonic() - t0:.0f}s")
 
         def show(label, r):
             print(f"{label:<28} rtt p50 {r['rtt']['p50']:8.3f}  server p50 {r['server']['p50']:8.3f}  "

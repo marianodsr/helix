@@ -1158,6 +1158,7 @@ def main():
     ap.add_argument("--query", default="{}", help="lspbig: lsp/query params (JSON) with a position in --file")
     ap.add_argument("--symbol", default="Handler", help="lspbig: workspaceSymbols query")
     ap.add_argument("--before", help="redraw: the binary to compare against")
+    ap.add_argument("--settle", type=float, default=0, help="lspbig: wait up to this long for gopls to go idle")
     args = ap.parse_args()
     modes = {"verify": verify, "bench": bench, "compat": compat,
              "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),

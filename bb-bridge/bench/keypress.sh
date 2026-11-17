@@ -31,7 +31,7 @@ fi
 bench() { # dir target-dir label
     (cd "$1" && CARGO_TARGET_DIR="$2" cargo test --release --features integration \
         -p helix-term --test integration keypress_bench -- --ignored --nocapture --test-threads=1) \
-        | sed -n "s/^KEYPRESS /$3 /p"
+        | sed -n "s/^.*KEYPRESS /$3 /p"  # the first line can follow the harness's "test ... "
 }
 
 for round in 1 2; do

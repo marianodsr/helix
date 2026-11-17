@@ -151,17 +151,25 @@ once; step 2c adds the waiting behaviour for every focus-moving method.
 
 Measured on this machine (M1 Pro), release build, with one subscribed client.
 
-| What | Target |
-|---|---|
-| Key-press handling with no client connected | no measurable change against the base commit |
-| Key-press handling with a client subscribed to everything | under 2% slower in the bench below |
-| `editor/state` round trip | p50 under 1 ms, p99 under 5 ms |
-| `editor/open` of an already-open file | p50 under 3 ms |
-| `event/selection` for a single move (leading edge) | p50 under 2 ms |
-| `event/selection` trailing flush of a burst | late by under 10 ms at p99 (macOS coalesces timers; measured 6 ms) |
-| Startup cost of the bridge | under 2 ms, off the first-frame path |
-| `lsp/query` overhead above the server's own time | under 3 ms |
-| Memory with an idle client | under 1 MiB |
+| What | Target | Measured 2026-11-17 (quiet machine, `bb-bridge` at `5d5adcaf2`) |
+|---|---|---|
+| Key-press handling with no client connected | no measurable change against the base commit | 1608 / 1641 µs per key (two rounds) against 1613 / 1614 µs at `49986e667`, 8,400 moves over a 20k-line Go file: within the 1% drift between rounds. Edits: 22.9 ms per key on both |
+| Key-press handling with a client subscribed to everything | under 2% slower in the bench below | -0.1% against the bridge off, in both rounds (1607.5 / 1621.6 µs against 1609.4 / 1623.8) |
+| `editor/state` round trip | p50 under 1 ms, p99 under 5 ms | p50 0.042 ms, p99 0.078 ms (12.5k-line Go file in view; read-only requests draw no frame) |
+| `editor/open` of an already-open file | p50 under 3 ms | p50 1.66 ms, p99 2.19 ms (one frame of the 12.5k-line file) |
+| `event/selection` for a single move (leading edge) | p50 under 2 ms | key to event p50 0.68 ms, p99 7.1 ms |
+| `event/selection` trailing flush of a burst | late by under 10 ms at p99 (macOS coalesces timers; measured 6 ms) | late by p50 2.8 ms, p99 4.0 ms (measured inside Helix) |
+| Startup cost of the bridge | under 2 ms, off the first-frame path | 0.47 ms on the main thread; binding and the registry file 1.3 ms in a background task |
+| `lsp/query` overhead above the server's own time | under 3 ms | Small module: p50 0.06 to 0.93 ms for every kind. Kubernetes v1.34.0 (16k Go files, gopls 4 GB, after its workspace load): `definition`, `hover`, `references`, `implementation` p50 0.09 to 1.2 ms, p90 under 1.5 ms (`implementation` back to back p90 7.2 ms). **Missed** with queries 100 ms apart: `documentSymbols` p50 3.4 ms (kubelet.go, 1.6 ms of it shaping the answer), `workspaceSymbols` p50 3.9 ms (100 results, 3.1 ms of it reading the files they point into for previews and positions). Back to back `documentSymbols` is 0.9 ms: an idle CPU runs the same work about 3x slower |
+| Memory with an idle client | under 1 MiB | 62 KiB per idle subscribed client (hx at 36 MiB with no client) |
+
+Cursor moves in a real terminal (`bench/move_latency.py`, key to the end of
+its output, p50 at 53 / 100 / 140 columns): Go `net/http/server.go`
+(4,100 lines) 6.1 / 6.4 / 5.3 ms in the fork against 2.9 / 3.1 / 3.2 ms in
+Homebrew's Helix 25.07; TypeScript (a 3,059-line `server.ts`) 2.5 / 2.5 /
+2.7 ms against 2.8 / 3.1 / 3.2 ms. The bridge is not involved (it runs with
+no client). The base commit was not measured here (the benchmark's build of
+it is the integration-test one, which has no terminal).
 
 `bb-bridge/bench/` holds the tools that produce these numbers: a small Rust
 or Python client that measures round trips, and an editor benchmark that
