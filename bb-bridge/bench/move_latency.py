@@ -5,8 +5,8 @@
                     [--rows 40] [-n 100] [--key j] [--check MS]
 
 Starts the given `hx` under a pty at each width with a throwaway HOME, XDG
-directories and an empty config (no bridge, no language servers: PATH is
-/usr/bin:/bin), opens the file, waits until the screen settles, then sends
+directories and a config that only turns language servers off (no bridge;
+PATH is /usr/bin:/bin), opens the file (`--goto N`: then goes to line N), waits until the screen settles, then sends
 one key at a time and measures from the write to the last byte of output it
 causes (output followed by `--quiet` ms of silence). Prints p50 / p95 / max
 per width. With `--check MS`, exits 1 if any width's p50 is above MS: that
@@ -17,7 +17,10 @@ The default file is net/http/server.go from the Go source (4,100 lines).
 `--runtime` defaults to the runtime/ next to the binary's checkout (for
 target/release/hx), else $HELIX_RUNTIME. `--grammars DIR` links prebuilt
 grammars into a copy of the runtime (for bisecting old commits whose
-runtime/ has no built grammars).
+runtime/ has no built grammars). Mind that hx before c250852cc (Dec 2025)
+loads grammars as `.so` on macOS and later ones as `.dylib`: with the wrong
+names Go is silently not highlighted, and fast. `screen_dump.py` shows
+whether it is.
 """
 
 import argparse
@@ -65,7 +68,9 @@ def runtime_with_grammars(runtime, grammars, root):
 
 def drain(fd, quiet, limit):
     """Read until `quiet` seconds without output (or `limit`); returns
-    (bytes read, time of first byte, time of last byte)."""
+    (bytes read, time of first byte, time of last byte). Answers the
+    terminal's primary device attributes query, as a terminal would, so hx
+    does not wait for its query timeout."""
     n, first, last = 0, None, None
     deadline = time.perf_counter() + limit
     while True:
@@ -87,17 +92,20 @@ def drain(fd, quiet, limit):
         if not data:
             return n, first, last
         t = time.perf_counter()
+        if b"\x1b[c" in data:
+            os.write(fd, b"\x1b[?62;22c")
         if first is None:
             first = t
         last = t
         n += len(data)
 
 
-def measure(hx, runtime, path, cols, rows, n, key, quiet, root):
+def measure(hx, runtime, path, cols, rows, n, key, quiet, root, goto=0):
     home = tempfile.mkdtemp(prefix="home", dir=root)
     for d in ("home", "cache", "data", "state", "config/helix"):
         os.makedirs(os.path.join(home, d), exist_ok=True)
-    open(os.path.join(home, "config/helix/config.toml"), "w").close()
+    with open(os.path.join(home, "config/helix/config.toml"), "w") as f:
+        f.write("[editor.lsp]\nenable = false\n")
     env = {
         "HOME": os.path.join(home, "home"),
         "XDG_CONFIG_HOME": os.path.join(home, "config"),
@@ -121,9 +129,10 @@ def measure(hx, runtime, path, cols, rows, n, key, quiet, root):
         got, _, _ = drain(fd, 0.5, 15.0)
         if not got:
             return None
-        # warm-up moves, not counted: 25.07 answers its first key only after
-        # its terminal-query timeout (~1.5 s)
-        for _ in range(3):
+        if goto:
+            os.write(fd, f"{goto}G".encode())
+            drain(fd, 0.3, 3.0)
+        for _ in range(3):  # warm-up moves, not counted
             os.write(fd, key.encode())
             drain(fd, quiet, 3.0)
         lat = []
@@ -160,6 +169,7 @@ def main():
     ap.add_argument("--rows", type=int, default=40)
     ap.add_argument("-n", type=int, default=100)
     ap.add_argument("--key", default="j")
+    ap.add_argument("--goto", type=int, default=0, help="go to this line first")
     ap.add_argument("--quiet", type=float, default=30.0, help="ms of silence that ends a key's output")
     ap.add_argument("--check", type=float, help="exit 1 if a width's p50 is above this (ms)")
     ap.add_argument("--label", default="")
@@ -189,7 +199,7 @@ def main():
         print(f"{a.label}hx={hx} file={os.path.basename(path)} ({lines} lines) rows={a.rows} key={a.key!r} n={a.n}")
         worst = 0.0
         for cols in [int(c) for c in a.cols.split(",")]:
-            lat = measure(hx, runtime, copy, cols, a.rows, a.n, a.key, a.quiet / 1000, root)
+            lat = measure(hx, runtime, copy, cols, a.rows, a.n, a.key, a.quiet / 1000, root, a.goto)
             if not lat:
                 print(f"  {cols:>4} cols: hx produced no output", file=sys.stderr)
                 sys.exit(125)
