@@ -423,7 +423,8 @@ knows it. Errors: `no_language_server`, `timeout`, `not_found`.
 ### events/subscribe, events/unsubscribe
 
 Params: `{ "events": ["selection", "documents", "diagnostics", "mode",
-"send", "lsp", "externalChange", "review", "files"] }`. Result: `{ "subscribed": [..] }`.
+"send", "lsp", "externalChange", "review", "files", "action",
+"commentPrompt"] }`. Result: `{ "subscribed": [..] }`.
 Events arrive as notifications. With no subscriber for a kind, Helix does no
 work for it.
 
@@ -439,6 +440,8 @@ work for it.
 | `event/send` | `{ "kind": "send" \| "ask" \| "comment" \| "flush", "note", "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "sendNow": false, "reviewId"? }` | the user ran one of the `:bb-*` commands below; `flush` carries no ranges |
 | `event/lsp` | `{ "id", "name", "state": "initialized" \| "exited" }` | |
 | `event/externalChange` | `{ "path", "modified": true }` | a file open with unsaved changes also changed on disk |
+| `event/action` | `{ "name", "args": [..], "path", "docId", "mode" }` | the user ran `:bb-emit <name> [args]`. Helix attaches no meaning to the name; the client does. |
+| `event/commentRequest` | `{ "path", "docId", "languageId", "version", "modified", "ranges": [{ "start", "end", "text" }], "truncated", "reviewId"?, "screen": { "top": {"row","col"}, "bottom": {"row","col"}, "rows", "cols" } }` | the user ran `:bb-comment` with no text while a client is subscribed to `commentPrompt`: the client shows its own comment box and creates the comment itself. `screen` gives the first and last visible cells of the primary selection in the terminal grid (0-based row and column from the top-left of Helix's screen) and the grid size, so the box can be placed beside the code; a selection that is partly off screen is clamped to the view. |
 | `event/files` | `{ "path", "docId", "cwd" }` | the user ran `:bb-files`; the client shows and focuses its file tree on `path` (the focused file, null for a scratch buffer) |
 | `event/review` | `{ "target": "<text>", "path", "docId" }` | the user ran `:bb-review <target>`; the client works out the base and the files and answers with `review/set` (or `review/clear` for `off`). `path` is the focused file, for clients that need to know which repository. |
 
@@ -452,7 +455,7 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 |---|---|
 | `:bb-send [note]` | Emits `event/send` (`kind: "send"`) with the current selections; `:bb-send!` sets `sendNow`. |
 | `:bb-ask <question>` | Emits `event/send` with `kind: "ask"` and `sendNow: true`. |
-| `:bb-comment [text]` | Emits `event/send` with `kind: "comment"`: a review comment on the selected lines, kept by the client until flushed. With no text it opens a one-line `comment:` prompt and emits on Enter; Escape cancels. |
+| `:bb-comment [text]` | Emits `event/send` with `kind: "comment"`: a review comment on the selected lines, kept by the client until flushed. With no text: when a client is subscribed to `commentPrompt`, emits `event/commentRequest` and opens nothing (the client asks for the text in its own UI); otherwise opens a one-line `comment:` prompt and emits on Enter, Escape cancels. |
 | `:bb-comments-send` | Emits `event/send` with `kind: "flush"`: send every pending comment to the thread. |
 | `:bb-locations [list]` | Opens a picker over a list set by `locations/set` (default: the active one) and makes it active. |
 | `:bb-next`, `:bb-prev` | Jump through the active list. |
@@ -460,6 +463,7 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 | `:bb-status` | Shows the connected clients (with their subscriptions), what the bridge offers and the socket path. |
 | `:bb-annotations` | Hides or shows every bridge annotation for the session. |
 | `:bb-review [target]` | With no argument: a picker over the active review's files (status, `+n -m`, path, with the file's diff as the preview); Enter opens the file at its first change. With a target: emits `event/review`. Targets are free text for the client; the completion offers `uncommitted`, `branch`, `turn`, `commit`, `pr` and `off`. With no client subscribed to `review`, `uncommitted` and `off` still work (they need nothing from a client) and other targets fail with a status-line error. |
+| `:bb-emit <name> [words]` | Emits `event/action` with that name and the remaining words as `args`. A way to bind a Helix key to something the client does. With no client subscribed to `action` it fails with a status-line error naming the action. |
 | `:bb-files` | Opens the file tree. With a client subscribed to `files` (inside bb): emits `event/files` and does nothing else; the client shows its tree. With none (Helix in an ordinary terminal): Helix runs the file manager itself, full screen, as a chooser, and opens what the user picks; cancelling changes nothing. The file manager is `[editor.bridge] file-manager`, by default yazi started on the focused file. A missing program is a status-line error. |
 | `:bb-diff` | Switches the inline diff on and off for the session, with or without a review (without one it shows uncommitted changes inline). |
 
