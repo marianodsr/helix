@@ -27,6 +27,9 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
 | `helix-term/tests/integration.rs` | 19–20, 23–25 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_buffers;` (Unix) | Step 2a integration tests (reload, focus check, locations, applyEdits). |
+| `helix-term/src/ui/editor.rs` | 1593 | `crate::bridge::focus_gained(context.editor);` in the `Event::FocusGained` arm | There is no editor event for the terminal regaining focus; this arm is where Helix already handles it (focus events reach the editor view under pickers and prompts, which ignore them). The bridge only copies ids there and stats files on a blocking thread (step 2a focus check). |
+| `helix-view/src/document.rs` | 2818–2824 (end of file) | `impl Document { pub fn last_saved_time() }` | The mtime Helix last read or wrote is private. The bridge compares it with the file's mtime to find external changes without a file watcher, and to refuse `applyEdits` with `save` before editing when Helix's own save would refuse. A separate `impl` block appended at the end, to stay out of upstream's way. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.

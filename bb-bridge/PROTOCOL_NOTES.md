@@ -148,3 +148,112 @@ should know about.
   and clients delete them when the socket refuses connections.
 - Not available on Windows (no Unix sockets): the bridge and its `:bb-*`
   commands are left out there.
+
+## Step 2a: reload, locations, applyEdits
+
+### editor/reload and the focus check
+
+- "Changed on disk" means the file's mtime differs from the one Helix
+  recorded when it last read or wrote the buffer (different, not only
+  newer). If the mtime moved but the content equals the buffer, the buffer
+  is `unchanged` (and the new mtime is recorded when the buffer is clean).
+- `paths` that are not open buffers are ignored: they appear in none of the
+  four lists. A file that exists but cannot be read is reported in `missing`
+  (and logged).
+- A reload is applied as Helix's own `:reload` applies it: one transaction
+  computed by Helix's diff (line by line, then by character inside changed
+  lines), one undo step (`u` brings back the text from before it), the
+  buffer clean afterwards. Selections and each view's scroll anchor are
+  mapped through the diff in every view showing the buffer; the cursor is
+  then kept in view. The language server gets a normal `didChange` and a
+  `didChangeWatchedFiles` (`file_changed`), as with `:reload`. The diff
+  base and branch name are refreshed.
+- After a reload, `event/documentChanged` with `"modified": false` follows
+  at once (not only at the next key press, as the step 1 note says for
+  `:reload`).
+- With `force`, modified buffers are reloaded and their unsaved changes
+  replaced; the replaced text is still one `u` away.
+- `follow` moves to the first change of the first reloaded buffer, in the
+  order Helix lists its buffers, through the same jump as `locations/set`
+  `goto` (jump list entry, centred). Only with `follow` does the result carry
+  `"deferred"` (always `false` until step 2c).
+- `reveal` and `interrupt` are validated (`interrupt` as for `editor/open`).
+  `reveal` has no visible effect until step 2d; the reload keeps the ranges
+  it inserted and the lines it removed for it.
+- **`event/externalChange`** is sent once per change on disk, per buffer:
+  the same buffer is announced again only after its file's mtime moves
+  again. Both `editor/reload` (for `skippedModified` buffers) and the focus
+  check send it.
+- **Focus check**: when the terminal reports that it regained focus (Helix
+  turns focus reporting on; a terminal that never reports focus never
+  triggers it), clean buffers changed on disk are reloaded silently, exactly
+  as `editor/reload` without `force` would, and buffers with unsaved changes
+  are announced with `event/externalChange` and a warning on the status line
+  naming them. It runs whether or not a client is connected, but only while
+  the bridge runs (`enable = false` and `HELIX_BRIDGE=0` turn it off too).
+
+### locations
+
+- `title` is optional (default: the list name) and is shown when the picker
+  opens. More than 2000 items is `invalid_params` with `field: "items"`; a
+  `goto` past the end is `invalid_params` with `field: "goto"`.
+- Item paths are resolved when the list is set (relative to
+  `workspaceRoot`). An item's `col` places the cursor (default column 1);
+  `endLine` selects from there through the end of that line, as
+  `editor/open` does.
+- The result is `{ "count", "deferred" }`; `deferred` is always present.
+  A `goto` to an item whose file is gone does not move, shows a warning and
+  still succeeds.
+- `locations/set` replaces the list of the same name; `"activate": false`
+  leaves the active list as it was. `locations/clear` without `list` clears
+  every list; it returns `{}`. Lists last for the session.
+- `:bb-locations [list]` opens the named list, else the active one, else the
+  most recently created. Columns: file, line (`5-6` for a range), label,
+  note, with a preview of the lines. Enter, `C-s` and `C-v` open as in any
+  picker. The list becomes active.
+- `:bb-next` and `:bb-prev` continue from the item last visited or stood
+  on; with none yet, `:bb-next` goes to the first item and `:bb-prev` to the
+  last. Items whose file is neither open nor on disk are skipped. The status
+  line reads `<list> <i>/<n>: <note>` (the label if there is no note, then
+  `path:line`), with `(skipped N missing file(s), wrapped)` when that
+  happened. No active list, an empty list, or every file gone is a
+  status-line error.
+- **The note under the cursor**: after every command run from a key, if the
+  primary cursor's line lies within an item of the active list (`line` to
+  `endLine`) that has a note, the status line shows that item as above. It
+  never replaces a message another command just set, and it makes that item
+  the current one for `:bb-next`. Mouse clicks do not trigger it. With no
+  active list that has notes, the hook is one relaxed atomic load.
+- Every jump (goto, walk, picker) records where the user was in the jump
+  list, so `C-o` goes back.
+
+### editor/applyEdits
+
+- Positions are clamped as everywhere else: a column past the end of a line
+  is the end of that line before its line ending (an edit never splits a
+  CRLF), a line past the end is the end of the text. A range whose start is
+  after its end is `invalid_params` (`field: "edits"`).
+- Overlap: touching ranges are fine. Insertions at the same point are
+  applied in the order given, and before a replacement that starts there.
+  An insertion strictly inside a replaced range overlaps it.
+- `newText` is inserted exactly as given; `\n` is not converted to the
+  buffer's line ending.
+- `version` is compared with the buffer as it is when the request reaches
+  the editor. A file that was not open has version 0 once opened, so a
+  `version` sent for a file that was closed in the meantime normally fails
+  with `version_mismatch`.
+- Undo: unsaved typing in progress (insert mode) is committed as its own
+  undo step first, then the edits are one step, so one `u` removes exactly
+  the edits and the user's typing is never merged with them.
+- `label` is shown on the status line.
+- A file that is not open is opened in the background and stays open as a
+  hidden buffer (listed in `editor/state` `documents`).
+- `save` goes through Helix's own save queue (language server `didSave`,
+  `event/documentSaved`, the "written" message) and the response waits for
+  the write, up to 2 s; `modified` is then relative to the revision written.
+  If the file changed on disk since Helix read it, where Helix's own `:w`
+  would refuse, the request fails before anything is applied with
+  `unsupported` and `data: { "reason": "changed on disk" }`. If the write
+  itself fails after the edits were applied: `unsupported` with
+  `data: { "reason": "save failed", "applied": true, "version" }`; if it does
+  not finish in time, `timeout` with `data.applied: true`.
