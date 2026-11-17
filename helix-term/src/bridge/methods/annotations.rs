@@ -815,13 +815,19 @@ pub fn decorate<'d>(
 ) {
     #[cfg(feature = "integration")]
     crate::bridge::count_view_drawn();
+    // the inline diff's line backgrounds go under everything; its removed
+    // lines come after the annotations' rows, as `View::text_annotations`
+    // reserved them
+    let diff = super::review::decorate_lines(doc, theme, decorations);
     let this = &doc.bridge_annotations;
-    if this.is_empty() {
-        return;
+    if !this.is_empty() {
+        let removed = this.reveal.as_ref().map_or(&[][..], |r| &r.removed[..]);
+        if (shown() && !this.items().is_empty()) || !removed.is_empty() {
+            decorations.add_decoration(Annotations::new(doc, view, theme, removed));
+        }
     }
-    let removed = this.reveal.as_ref().map_or(&[][..], |r| &r.removed[..]);
-    if (shown() && !this.items().is_empty()) || !removed.is_empty() {
-        decorations.add_decoration(Annotations::new(doc, view, theme, removed));
+    if let Some(diff) = diff {
+        super::review::decorate_removed(doc, view, theme, diff, decorations);
     }
     if let Some(reveal) = &this.reveal {
         super::reveal::decorate(reveal, doc.text().slice(..), theme, decorations);

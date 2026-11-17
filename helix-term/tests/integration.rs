@@ -30,6 +30,8 @@ mod test {
     mod bridge_lsp;
     #[cfg(target_os = "macos")]
     mod bridge_watch;
+    #[cfg(unix)]
+    mod bridge_review;
     mod command_line;
     mod commands;
     #[cfg(unix)]

@@ -2668,6 +2668,8 @@ pub struct BridgeConfig {
     pub file_manager: Vec<String>,
     /// Reload open buffers when their file changes on disk. Defaults to `true`.
     pub watch: bool,
+    /// Draw the inline diff from the start (`:bb-diff`). Defaults to `false`.
+    pub inline_diff: bool,
 }
 
 impl Default for BridgeConfig {
@@ -2680,6 +2682,7 @@ impl Default for BridgeConfig {
                 .map(String::from)
                 .to_vec(),
             watch: true,
+            inline_diff: false,
         }
     }
 }

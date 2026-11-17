@@ -723,3 +723,106 @@ should know about.
   status-line error and the terminal is not touched.
 - `editor/command` refuses `bb-files` under `safe` (it runs a program);
   under `all` it runs as the user's own key press would.
+
+## Review (step 5)
+
+### review/set, review/clear, review/state
+
+- **`base.rev`** is a full object id (40 hex digits; 64 in a SHA-256
+  repository), peeled to a commit. Short ids and names (`main`, `HEAD~1`)
+  are `unsupported` with `data.reason: "unknown revision"`, like a commit
+  the repository does not have; the client resolves names. An empty `rev` is
+  `invalid_params` (`field: "base"`).
+- **The repository** is the one holding the first listed file (its nearest
+  existing directory), or `workspaceRoot` when `files` is empty. Not in a
+  git work tree: `unsupported`, `data.reason: "not a git repository"`.
+  Every buffer of a file in that work tree is compared with the base,
+  listed or not; files in another repository, a nested repository or a
+  submodule keep comparing with their own `HEAD`.
+- Paths are resolved with symlinks followed (macOS `/tmp`, `/var`) before
+  they are matched against the repository; the picker shows them relative
+  to Helix's working directory.
+- **Renamed** files compare with `oldPath` at the base. **Added** files
+  compare with an empty text when the base does not have them (every line
+  added), also in a repository with no commits. A file that is neither in
+  the base nor listed as added has no diff, as in upstream Helix.
+- **When the base is read**: a file opened or reloaded while the review is
+  active gets the review's base where Helix reads `HEAD`'s (the same read,
+  on the same thread, at the same cost). `review/set` and `review/clear`
+  move the buffers already open: their bases are read and decoded in a
+  blocking task and handed to each buffer's diff worker; the request
+  answers once they are handed over, and Helix's diff (gutter, `]g`,
+  inline diff) shows them a few milliseconds later. Several `review/set`s
+  apply in order; a newer one stops an older one's work.
+- **`inline`**: `true` or `false` switches the inline diff. Omitted, a new
+  review (another `id`) switches it on and the same `id` sent again leaves
+  it as the user set it with `:bb-diff`. `review/clear` switches it off.
+- **The same `id` again** replaces the list, re-reads the bases (the
+  renames and new files may have changed) and moves nothing on screen.
+- `title` defaults to the `id`.
+- **`open`** opens the picker through the "not yanking the user" gate; the
+  notice reads `bb wants to show the review's <n> files (:bb-go)`. An empty
+  list cannot be picked from: the review is still set, the request
+  succeeds, and the status line says so.
+- `review/state` with no review: `{ "active": false, "id": null, "title":
+  null, "base": null, "inline": <whether :bb-diff has it on>, "files": 0 }`.
+  `base` is the `rev` as sent, or `"HEAD"`.
+
+### The inline diff
+
+- It draws Helix's own hunks for the buffer, so it follows every edit
+  (typing, undo, an agent's `applyEdits`, a reload) as the gutter does.
+  Without a review it shows what Helix compares with anyway: `HEAD`.
+- **Removed lines** are virtual lines above the change. Helix has no
+  virtual lines above the first line, so a change at the very top shows its
+  removed lines under its last line; and none after the last line, so lines
+  removed at the end of a file without a final newline are not shown (the
+  gutter still marks them). At most 400 removed lines per change, then one
+  row `⋯ <n> more removed lines`. They wrap like the document's own lines
+  (soft wrap on: at words, keeping the indent, with Helix's wrap
+  indicator; off: cut at the edge and scrolled sideways with the view).
+- **Styles**, from the theme: removed text in `diff.minus`, struck through
+  when the theme's `markup.strikethrough` has `crossed_out` and dimmed
+  otherwise, on a band of `diff.minus` 16% into `ui.background`, with `▍`
+  in `diff.minus.gutter` in the diff gutter column; added lines (a change
+  that removed nothing) get `diff.plus` at 14%, changed lines `diff.delta`
+  at 12%, keeping their syntax colours. Themes whose background is not an
+  RGB colour get no tints (the struck-through text and the gutter remain).
+- With annotations: a comment's rows go directly under its line, then the
+  removed lines of the change below it; a highlighted comment's background
+  wins over the diff's.
+- Cost: with no review and the inline diff off, one relaxed atomic load in
+  `View::text_annotations` and one per drawn pane. With it on, the hunks
+  are copied out of Helix's diff (reused while they do not change), never
+  holding its lock while drawing.
+
+### Commands
+
+- **`:bb-review`** with no argument opens the picker (status letter `M A D
+  R`, `+n -m`, path; a rename shows `old → new`), starting on the focused
+  file when it is listed. The preview is a unified diff with 3 lines of
+  context and line numbers, of the buffer's text when it is open (unsaved
+  changes included) and of the file on disk otherwise, built in the
+  background. `C-t` hides it as in any picker. Enter (or `C-s`, `C-v`)
+  opens the file with its first change selected, as `[g` does; a file
+  opened just then waits up to 1 s for Helix's diff, unless the user moves
+  first. The status line reads `review <i>/<n>: <path> +a -d`.
+- **A deleted file** opens as a scratch buffer named `<path> (deleted)`
+  holding its text at the base, highlighted as the file's language, not
+  modified, and marked read-only (`[readonly]` in the status line). Helix
+  does not stop edits to it, and `:w` would write a file of that name.
+- **`:bb-review <target>`** with a client subscribed to `review`:
+  `event/review { target, path, docId }` (`path` null for a scratch
+  buffer) and the status `Asked bb for the <target> review`. `off` also
+  ends the review at once. With none: `uncommitted` sets up the review
+  itself from Helix's own `git status` of the focused file's repository
+  (untracked files as added, conflicts as modified), `id: "uncommitted"`,
+  title `Uncommitted changes`, files sorted by path, line counts filled in
+  just after; `off` ends the review; any other target is a status-line
+  error. The completion offers the six words; others are passed on.
+- **`:bb-diff`** says `Inline diff on (<review title or HEAD>)` or
+  `Inline diff off`. `[editor.bridge] inline-diff` is read at start only.
+- **`event/send`** has `reviewId` only while a review is active.
+- The command policy allows `bb-review` and `bb-diff` under `safe`: they
+  change what is drawn and ask the client for a review, which a client can
+  set directly anyway; nothing is sent to the agent.

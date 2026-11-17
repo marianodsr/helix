@@ -380,6 +380,9 @@ pub struct SendEvent {
     pub ranges: Vec<TextRange>,
     pub truncated: bool,
     pub send_now: bool,
+    /// The active review (step 5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -468,6 +471,7 @@ mod tests {
             ranges: vec![],
             truncated: false,
             send_now: false,
+            review_id: None,
         };
         let v = serde_json::to_value(ev).unwrap();
         assert_eq!(v["kind"], "comment");

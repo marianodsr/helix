@@ -3,6 +3,7 @@
 
     move_latency.py [--hx PATH] [--runtime DIR] [--file F] [--cols 53,100,140]
                     [--rows 40] [-n 100] [--key j] [--check MS]
+                    [--diff-base BASE [--inline-diff]]
 
 Starts the given `hx` under a pty at each width with a throwaway HOME, XDG
 directories and a config that only turns language servers off (no bridge;
@@ -34,6 +35,7 @@ import signal
 import statistics
 import struct
 import sys
+import subprocess
 import tempfile
 import termios
 import time
@@ -100,12 +102,12 @@ def drain(fd, quiet, limit):
         n += len(data)
 
 
-def measure(hx, runtime, path, cols, rows, n, key, quiet, root, goto=0):
+def measure(hx, runtime, path, cols, rows, n, key, quiet, root, goto=0, extra=""):
     home = tempfile.mkdtemp(prefix="home", dir=root)
     for d in ("home", "cache", "data", "state", "config/helix"):
         os.makedirs(os.path.join(home, d), exist_ok=True)
     with open(os.path.join(home, "config/helix/config.toml"), "w") as f:
-        f.write("[editor.lsp]\nenable = false\n")
+        f.write("[editor.lsp]\nenable = false\n" + extra)
     env = {
         "HOME": os.path.join(home, "home"),
         "XDG_CONFIG_HOME": os.path.join(home, "config"),
@@ -173,6 +175,9 @@ def main():
     ap.add_argument("--quiet", type=float, default=30.0, help="ms of silence that ends a key's output")
     ap.add_argument("--check", type=float, help="exit 1 if a width's p50 is above this (ms)")
     ap.add_argument("--label", default="")
+    ap.add_argument("--diff-base", help="commit this file as the file's base in a throwaway git repository, "
+                    "so Helix diffs against it (step 5)")
+    ap.add_argument("--inline-diff", action="store_true", help="[editor.bridge] inline-diff = true (step 5)")
     a = ap.parse_args()
 
     hx = os.path.abspath(a.hx)
@@ -194,12 +199,20 @@ def main():
         work = os.path.join(root, "work")
         os.makedirs(work)
         copy = os.path.join(work, os.path.basename(path))
+        if a.diff_base:
+            git = ["git", "-C", work, "-c", "user.name=b", "-c", "user.email=b@example.com",
+                   "-c", "commit.gpgsign=false"]
+            subprocess.run(git + ["init", "-q"], check=True)
+            shutil.copy(a.diff_base, copy)
+            subprocess.run(git + ["add", "-A"], check=True)
+            subprocess.run(git + ["commit", "-qm", "base"], check=True)
         shutil.copy(path, copy)
         lines = sum(1 for _ in open(copy, "rb"))
         print(f"{a.label}hx={hx} file={os.path.basename(path)} ({lines} lines) rows={a.rows} key={a.key!r} n={a.n}")
         worst = 0.0
         for cols in [int(c) for c in a.cols.split(",")]:
-            lat = measure(hx, runtime, copy, cols, a.rows, a.n, a.key, a.quiet / 1000, root, a.goto)
+            extra = "[editor.bridge]\ninline-diff = true\n" if a.inline_diff else ""
+            lat = measure(hx, runtime, copy, cols, a.rows, a.n, a.key, a.quiet / 1000, root, a.goto, extra)
             if not lat:
                 print(f"  {cols:>4} cols: hx produced no output", file=sys.stderr)
                 sys.exit(125)
