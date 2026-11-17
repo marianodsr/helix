@@ -722,6 +722,24 @@ impl DoubleEndedIterator for Traverse<'_> {
     }
 }
 
+// bb bridge (fork addition, see bb-bridge/): read-only access to the layout
+// for `view/list`, which mirrors this tree.
+impl Tree {
+    /// The root container.
+    pub fn root(&self) -> ViewId {
+        self.root
+    }
+
+    /// A container's layout and children in order, or `None` for a view or
+    /// an unknown id.
+    pub fn container(&self, id: ViewId) -> Option<(Layout, &[ViewId])> {
+        match &self.nodes.get(id)?.content {
+            Content::Container(container) => Some((container.layout, &container.children)),
+            Content::View(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -964,23 +982,5 @@ mod test {
                 .map(|(view, _)| view.area.width)
                 .collect::<Vec<_>>()
         );
-    }
-}
-
-// bb bridge (fork addition, see bb-bridge/): read-only access to the layout
-// for `view/list`, which mirrors this tree.
-impl Tree {
-    /// The root container.
-    pub fn root(&self) -> ViewId {
-        self.root
-    }
-
-    /// A container's layout and children in order, or `None` for a view or
-    /// an unknown id.
-    pub fn container(&self, id: ViewId) -> Option<(Layout, &[ViewId])> {
-        match &self.nodes.get(id)?.content {
-            Content::Container(container) => Some((container.layout, &container.children)),
-            Content::View(_) => None,
-        }
     }
 }
