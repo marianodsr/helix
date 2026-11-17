@@ -1,0 +1,51 @@
+# Upstream touchpoints
+
+Every edit to a file that exists upstream (base `49986e667`), with the lines
+(in this branch) and the reason. Everything else is new: `helix-term/src/bridge/`,
+`helix-term/tests/test/bridge.rs` and `bb-bridge/`. Regenerate the hunk list
+with:
+
+```sh
+git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
+    ':!helix-term/src/bridge' ':!helix-term/tests/test/bridge.rs' | grep -E '^(\+\+\+|@@)'
+```
+
+| File | Lines | Change | Why |
+|---|---|---|---|
+| `helix-term/Cargo.toml` | 55 | tokio features `+ "net", "sync"` | Unix socket listener; `oneshot`/`Notify`. |
+| `helix-term/Cargo.toml` | 88 | `slotmap.workspace = true` | `viewId` as a number (`ViewId` is a slotmap key); already a workspace dependency. |
+| `Cargo.lock` | 1 line | `slotmap` under helix-term | Follows from the line above. |
+| `helix-view/src/editor.rs` | 438–439 | `pub bridge: BridgeConfig` field in `Config` | `[editor.bridge]`; `Config` denies unknown fields, so the section must be declared here. |
+| `helix-view/src/editor.rs` | 1221 | `bridge: BridgeConfig::default()` | Default of the field above. |
+| `helix-view/src/editor.rs` | 2655–2682 (end of file) | `BridgeConfig`, `BridgeCommandPolicy` | The section's type: `enable` (default true), `commands` (`safe`/`all`/`none`). Appended at the end to stay out of upstream's way. |
+| `helix-term/src/lib.rs` | 6–10 | `pub mod bridge;` (Unix), `bridge/unsupported.rs` elsewhere | Module declaration. |
+| `helix-term/src/application.rs` | 247–248 | `crate::bridge::start(&editor);` in `Application::new` | Start after the editor and job queue exist; binding happens in a background task. |
+| `helix-term/src/application.rs` | 621 | `crate::bridge::document_saved(..)` in `handle_document_write` | There is no "document saved" event; this is the one place a completed save is known, after the saved revision is recorded. |
+| `helix-term/src/application.rs` | 1350 | `crate::bridge::stop();` in `close` | Remove socket and registry file on every clean exit (`:q`, SIGTERM, SIGINT all end here). |
+| `helix-term/src/commands/typed.rs` | 42 | `const fn none()` -> `pub(crate) const fn none()` | Bridge typed commands live in the bridge module and need an empty completer. |
+| `helix-term/src/commands/typed.rs` | 4110 | `.chain(crate::bridge::typable_commands())` in `TYPABLE_COMMAND_MAP` | Makes `:bb-*` real typed commands: runnable, bindable from `config.toml` (`C = ":bb-comment"`), documented. |
+| `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
+| `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
+| `helix-term/tests/integration.rs` | 19–23 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+
+Not touched: the main loop, any event definition, any key map, any
+existing hook or handler, `helix-term/src/handlers.rs`.
+
+## Against the plugin-system branch
+
+Checked against the tip of `steel-event-system` (mattwparas/helix,
+`424add100`, 2026-10-22) by applying each hunk to that tree:
+
+| Touchpoint | On steel |
+|---|---|
+| `lib.rs`, `application.rs` (3 hunks), `integration.rs` | Apply cleanly (application.rs with offsets). |
+| `editor.rs` field and default | **Conflict, trivial**: steel adds `enable_steel` right before `workspace_trust` in both places. Keep both lines. The appended `BridgeConfig` applies cleanly. |
+| `typed.rs` `none()` | **Drop the hunk**: steel already made it `pub const fn`. |
+| `typed.rs` `TYPABLE_COMMAND_MAP` | **Conflict, trivial**: steel is on an older upstream (`Lazy` instead of `LazyLock`); the one-line `.chain(...)` goes in the same place. |
+| `typed.rs` `complete_command_line`, `commands.rs` `command_palette` | **Conflict, small**: steel rewrites these same expressions to chain its scripting-engine commands. Add the bridge chain next to steel's. |
+| `helix-term/Cargo.toml` | **Conflict, trivial**: different neighbouring lines (steel adds its features and dependencies); the tokio line itself is unchanged there. |
+| `Cargo.lock` | Regenerate. |
+
+None of the bridge's own files exist on that branch. A later port is a
+rebase with four small manual merges, all in lines that list commands or
+config fields.

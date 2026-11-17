@@ -18,6 +18,9 @@ mod test {
     mod auto_pairs;
     #[cfg(unix)]
     mod bridge;
+    #[cfg(unix)]
+    #[path = "../../../bb-bridge/bench/keypress.rs"]
+    mod keypress_bench;
     mod command_line;
     mod commands;
     mod movement;

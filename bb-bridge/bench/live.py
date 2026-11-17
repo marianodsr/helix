@@ -550,13 +550,14 @@ def compat(args):
     try:
         env = sb.env()
         health = subprocess.run([args.hx, "--health"], env=env, cwd=sb.repo, capture_output=True, text=True, timeout=60)
+        health.stdout, health.stderr = strip_ansi(health.stdout), strip_ansi(health.stderr)
         head = health.stdout.split("\n")[:12]
         print("--health header:\n  " + "\n  ".join(head))
         for line in (health.stdout + health.stderr).split("\n"):
             if re.search(r"(?i)error|invalid|unknown field|failed to (parse|load)", line) and "✘" not in line:
                 problems.append(f"--health: {line.strip()}")
         for lang in ("go", "rust", "typescript", "tsx", "json", "toml", "yaml", "markdown", "bash", "python", "starlark", "protobuf", "elixir", "ruby"):
-            out = subprocess.run([args.hx, "--health", lang], env=env, cwd=sb.repo, capture_output=True, text=True, timeout=60).stdout
+            out = strip_ansi(subprocess.run([args.hx, "--health", lang], env=env, cwd=sb.repo, capture_output=True, text=True, timeout=60).stdout)
             grammar_ok = "Tree-sitter parser: ✓" in out or "Tree-sitter parser: ✔" in out
             hl = re.search(r"Highlight queries: (\S+)", out)
             print(f"  {lang:<11} parser={'ok' if grammar_ok else 'MISSING'} highlights={hl.group(1) if hl else '?'}")
@@ -581,6 +582,16 @@ def compat(args):
                 c.close()
             else:
                 problems.append("bridge did not start under this config")
+            # every theme in the config's themes/ directory, as `:theme` loads it
+            themes_dir = os.path.join(config_home, "helix", "themes")
+            themes = sorted(f[:-5] for f in os.listdir(themes_dir) if f.endswith(".toml")) if os.path.isdir(themes_dir) else []
+            for name in themes:
+                m = hx.mark()
+                hx.send(f":theme {name}" + ENTER, pause=0.25)
+                out = hx.text_since(m)
+                if re.search(r"(?i)could not|failed|error|invalid|unsupported", out):
+                    problems.append(f"theme {name}: {out.strip()[-200:]}")
+            print(f"loaded {len(themes)} themes from {themes_dir}")
             hx.send(ESC, pause=0.15)
             hx.send(":qa!" + ENTER)
             hx.wait_exit()
@@ -600,6 +611,10 @@ def compat(args):
     for p in problems:
         print("  " + p)
     return 1 if problems else 0
+
+
+def strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def snapshot(directory):
