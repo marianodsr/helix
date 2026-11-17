@@ -21,7 +21,9 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::bridge::convert::{char_after_line, char_from_pos, resolve_path};
+use crate::bridge::convert::{
+    char_after_line, char_from_pos, focus_view_of, open_path, resolve_path,
+};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{parse_params, Position, RpcError, RpcResult};
@@ -213,7 +215,10 @@ impl std::fmt::Display for JumpError {
 }
 
 fn exists(editor: &Editor, path: &Path) -> bool {
-    editor.document_id_by_path(path).is_some() || path.is_file()
+    editor
+        .document_id_by_path(&open_path(editor, path))
+        .is_some()
+        || path.is_file()
 }
 
 /// Every jump a client requests (`locations/set` with `goto`,
@@ -254,12 +259,19 @@ pub fn jump(editor: &mut Editor, target: &JumpTarget, action: Action) -> Result<
     if !exists(editor, &target.path) {
         return Err(JumpError::Gone(target.path.clone()));
     }
+    let path = open_path(editor, &target.path);
+    if matches!(action, Action::Replace) {
+        // a pane that already shows the file takes the focus
+        if let Some(doc) = editor.document_id_by_path(&path) {
+            focus_view_of(editor, doc);
+        }
+    }
     {
         let (view, doc) = current!(editor);
         view.push_jump(doc);
     }
     let doc_id = editor
-        .open(&target.path, action)
+        .open(&path, action)
         .map_err(|err| JumpError::Open(target.path.clone(), err.to_string()))?;
     let (view, doc) = current!(editor);
     debug_assert_eq!(doc.id(), doc_id);

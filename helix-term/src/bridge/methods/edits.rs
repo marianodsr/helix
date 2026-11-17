@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
-use crate::bridge::convert::{char_from_pos, path_string, resolve_path};
+use crate::bridge::convert::{char_from_pos, open_path, path_string, resolve_path};
 use crate::bridge::dispatch::{on_editor, EDITOR_TIMEOUT};
 use crate::bridge::protocol::{parse_params, ErrorCode, Range, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
@@ -179,6 +179,7 @@ fn apply_on_main(
     exists: bool,
     params: ApplyEditsParams,
 ) -> Result<Applied, RpcError> {
+    let path = &open_path(editor, path);
     let doc_id = match editor.document_id_by_path(path) {
         Some(id) => id,
         None if exists => editor

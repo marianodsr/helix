@@ -27,7 +27,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::Instant;
 
 use super::lsp::{range_from_lsp, Texts};
-use crate::bridge::convert::{pos_from_char, resolve_path};
+use crate::bridge::convert::{open_path, pos_from_char, resolve_path};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::events::{broadcast, wants_kind, Kind};
 use crate::bridge::protocol::{parse_params, ErrorCode, Position, Range, RpcError, RpcResult};
@@ -175,7 +175,7 @@ fn sources<'a>(editor: &'a Editor, scope: Option<&Path>) -> Vec<(&'a Path, Sourc
     match scope {
         Some(path) => {
             if let Some(doc) = editor
-                .document_id_by_path(path)
+                .document_id_by_path(&open_path(editor, path))
                 .and_then(|id| editor.document(id))
             {
                 if let Some(p) = doc.path() {
@@ -329,7 +329,7 @@ pub fn get(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
         let (snap, known) = on_editor(move |editor, _| {
             let snap = snapshot(editor, scope.as_deref());
             let known = scope.as_deref().is_none_or(|p| {
-                editor.document_id_by_path(p).is_some()
+                editor.document_id_by_path(&open_path(editor, p)).is_some()
                     || editor.diagnostics.contains_key(&Uri::from(p))
             });
             (snap, known)

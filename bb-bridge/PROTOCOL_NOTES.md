@@ -166,9 +166,10 @@ should know about.
   and includes the pane's own status line; `firstLine`/`lastLine` are as in
   `editor/state` `visible`.
 - `view/focus` and `view/close` answer `{ "deferred": <bool> }` (PROTOCOL.md
-  says `{}`; every focus-moving method carries `deferred`). Focusing the
-  pane that already has focus answers `false` at once.
-- `view/close` (**differs**, additive): closing the **focused** pane moves
+  said `{}` until the integration step; every focus-moving method carries
+  `deferred`). Focusing the pane that already has focus answers `false` at
+  once.
+- `view/close` (now in PROTOCOL.md): closing the **focused** pane moves
   the user's focus, so it honours `interrupt` like `view/focus`; closing any
   other pane never waits. Unknown `viewId`: `not_found`; the last pane:
   `unsupported`.
@@ -183,8 +184,8 @@ should know about.
 
 ### Not yanking the user
 
-- The user is busy when any of these holds (the last two are **additions**
-  to PROTOCOL.md):
+- The user is busy when any of these holds (the last two were additions,
+  now in PROTOCOL.md):
   - Helix is in insert mode;
   - a key was pressed in the last 1500 ms: any key bound to a command and any
     character typed (hooks on `PostCommand` and `PostInsertChar`); keys the
@@ -248,9 +249,10 @@ should know about.
   when a command is to blame); for `keys`, also `data.key` and `data.sent`
   (keys delivered before the refused one). After a refused key, Escape is
   sent.
-- Policy (**differs**, stricter than the table in PROTOCOL.md): the full list
-  and the reason for each refusal is `bb-bridge/COMMAND_POLICY.md`. Beyond
-  PROTOCOL.md's list `safe` also refuses: the `write!` family (overwrites a
+- Policy: the full list and the reason for each refusal is
+  `bb-bridge/COMMAND_POLICY.md`; PROTOCOL.md's table now summarises it.
+  Beyond the shell and force commands of the first draft, `safe` also
+  refuses: the `write!` family (overwrites a
   file changed on disk), `config-reload`, `workspace-trust`,
   `workspace-untrust`, `workspace-exclude` (they load configuration, which
   can name programs), `:set`/`:toggle` of `shell`, `clipboard-provider`,
@@ -482,6 +484,25 @@ should know about.
   other method still does. Nothing a client sees changes except speed (on
   a 20k-line Go file, `editor/state` p50 3.65 ms -> 0.04 ms). `lsp/query`
   that loads a file in the background still repaints (the bufferline).
+- **A jump goes to the pane that shows the file.** `editor/open` with focus
+  and no `split` or `viewId`, `locations/set` `goto` (and `:bb-locations`,
+  `:bb-next`, `:bb-prev`), `editor/reload` `follow` and `editor/reveal`
+  `follow`: when the file is not in the focused pane but another pane shows
+  it, that pane is focused and the cursor moves there; the focused pane is
+  not switched to the file. With several such panes, the first in layout
+  order. The result's `viewId` is that pane. An explicit `split` or `viewId`
+  behaves as before.
+- **Symlinked paths.** Helix does not resolve symlinks, so `/tmp/x` and
+  `/private/tmp/x` would be two buffers of one file. When a requested path
+  is not open as given, the bridge looks for an open buffer of the same file
+  (same file name, same resolved path) and uses it, under the name it is
+  open as: `editor/open`, `editor/text`, `editor/applyEdits`,
+  `editor/reload` `paths`, `editor/reveal`, `annotations/set` and `clear`,
+  `locations` items, `diagnostics/get` `path` and `lsp/query`. Results carry
+  the open buffer's path. Not covered: a symlink to a file of another name
+  (only same-named buffers are compared, which keeps the usual case free of
+  file-system calls), and files that are not open (each name stays what the
+  request said).
 
 # Protocol notes (step 2b: diagnostics and language servers)
 

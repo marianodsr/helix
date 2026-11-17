@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::bridge::convert::{path_string, pos_from_char, resolve_path};
+use crate::bridge::convert::{open_path, path_string, pos_from_char, resolve_path};
 use crate::bridge::dispatch::{on_editor, on_editor_read};
 use crate::bridge::events::{self, broadcast, DocMeta, Kind, Msg};
 use crate::bridge::methods::interrupt::Interrupt;
@@ -438,6 +438,9 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
 
 /// Copy what the blocking task needs from each open buffer with a file.
 fn snapshot(editor: &Editor, paths: Option<&[PathBuf]>) -> Vec<Candidate> {
+    let paths: Option<Vec<PathBuf>> =
+        paths.map(|paths| paths.iter().map(|p| open_path(editor, p)).collect());
+    let paths = paths.as_deref();
     editor
         .documents()
         .filter_map(|doc| {
