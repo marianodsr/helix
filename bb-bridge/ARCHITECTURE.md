@@ -27,6 +27,12 @@ These are the acceptance criteria; everything else serves them.
    and will add a file tree later, so the editor surface must take the whole
    work area when wanted, pass every key through, and stay fast.
 
+5. **The agent can drive the editor.** Asked "take me to the entry point of
+   X", the agent opens the right file in the right pane with the cursor on
+   the line, and can walk the user through several places in order. Beyond
+   that it has full control: anything the user can do from the keyboard, it
+   can do through the bridge.
+
 On the file tree: upstream Helix has a built-in file explorer picker
 (`space e`) but no plugin system; that is still an open pull request
 (helix-editor/helix#8675, branch `steel-event-system` of mattwparas/helix).
@@ -85,8 +91,18 @@ The fork must stay cheap to rebase, and must not make the editor slower.
 8. **Language-server reuse.** `lsp/query` uses Helix's existing clients and
    their typed request methods (`goto_definition`, `goto_reference`, …).
    No second language server is started by the bridge.
-9. **Security.** Local socket only, directory `0700`, socket `0600`. No
-   method runs shell commands or typed commands on behalf of a client.
+9. **Full control, with two guards.** `editor/command` can run any typed
+   command, named command or key sequence. Guard one is the command policy
+   (PROTOCOL.md): by default no shell-running commands and no discarding of
+   unsaved work, because an agent must not get around bb's permission mode
+   through the editor, and must not lose the user's edits. The policy is
+   enforced inside Helix, so no client can skip it. Guard two is "not
+   yanking the user": focus-moving requests wait while the user is typing.
+   Prefer the structured methods (`editor/open`, `locations/set`, `view/*`,
+   `editor/select`, `editor/applyEdits`) for everything they cover; they are
+   typed, testable and stable across Helix versions. `editor/command` is the
+   escape hatch.
+10. **Security.** Local socket only, directory `0700`, socket `0600`.
 
 ## Module layout (designed so later work does not collide)
 
@@ -102,16 +118,21 @@ helix-term/src/bridge/
     editor.rs     hello, state, open, text, selection, status   (step 1)
     send.rs       :bb-send, :bb-ask, :bb-status commands        (step 1)
     reload.rs     editor/reload, focus-gained check             (step 2a)
-    changes.rs    changes/*, picker and jump commands           (step 2a)
+    locations.rs  locations/*, picker, :bb-next/:bb-prev        (step 2a)
     edits.rs      editor/applyEdits                             (step 2a)
     diagnostics.rs  diagnostics/get                             (step 2b)
     lsp.rs        lsp/servers, lsp/query                        (step 2b)
+    views.rs      view/*, editor/select                         (step 2c)
+    command.rs    editor/command, command policy                (step 2c)
+    interrupt.rs  idle tracking, pending jump, :bb-go           (step 2c)
     annotations.rs  annotations/set                             (step 3)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer
-`method_not_found` and are absent from `capabilities`. Steps 2a and 2b then
-touch disjoint files and can run in parallel worktrees.
+`method_not_found` and are absent from `capabilities`. Steps 2a, 2b and 2c
+then touch disjoint files and can run in parallel worktrees. In step 1,
+`editor/open` accepts `interrupt`, `viewId` and `note` but always moves at
+once; step 2c adds the waiting behaviour for every focus-moving method.
 
 ## Performance targets
 

@@ -77,8 +77,8 @@ first, bump nothing silently, and keep it exact.
 Params: `{ "client": "bb-plugin", "clientVersion": "0.1.0" }`
 
 Result: `{ "protocol": 1, "helixVersion", "pid", "cwd", "workspaceRoot",
-"capabilities": ["editor", "reload", "changes", "diagnostics", "lsp",
-"applyEdits", "annotations"] }`. A capability is listed only when implemented;
+"capabilities": ["editor", "reload", "locations", "views", "command",
+"diagnostics", "lsp", "applyEdits", "annotations"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
 clients feature-detect on it.
 
 ### editor/state
@@ -106,11 +106,22 @@ present. `documents` lists every open buffer (path null for scratch buffers).
 ### editor/open
 
 Params: `{ "path", "line"?, "col"?, "endLine"?, "endCol"?, "split"?: "none" |
-"horizontal" | "vertical", "focus"?: true }`. Opens the file (or switches to
-it), selects the given range or puts the cursor at the position, and centres
-it. With `"focus": false` the file is loaded in the background without
-changing what the user sees. Result: `{ "docId", "path", "version" }`.
-Errors: `not_found`.
+"horizontal" | "vertical", "viewId"?, "focus"?: true, "interrupt"?:
+"whenIdle" | "always", "note"? }`. Opens the file (or switches to it) in the
+focused pane, a new split, or the given pane; selects the range or puts the
+cursor at the position; centres it; shows `note` on the status line. With
+`"focus": false` the file is loaded in the background without changing what
+the user sees. Result: `{ "docId", "path", "version", "viewId",
+"deferred": false }`. Errors: `not_found`.
+
+**Not yanking the user.** Any request that moves the user's focus
+(`editor/open` with focus, `locations/set` with `goto`, `view/focus`,
+`editor/select`, `editor/command`) honours `interrupt`. With `whenIdle` (the
+default), if the user is in insert mode or pressed a key in the last 1500 ms,
+Helix does not move: it stores the request as the pending jump (one slot, the
+newest wins), shows "bb wants to show <file>:<line> (:bb-go)" on the status
+line, and answers `"deferred": true`. `:bb-go` performs it. `always` moves at
+once.
 
 ### editor/text
 
@@ -147,12 +158,65 @@ when the buffer moved on. Result: `{ "path", "version", "modified" }`.
 Params: `{ "message", "severity"?: "info" | "warning" | "error" }`. Shows a
 status-line message. Result: `{}`.
 
-### changes/set
+### locations/set
 
-Params: `{ "id", "title", "items": [{ "path", "line", "endLine"?, "label"? }] }`.
-Replaces the "changes" list the user can walk (see Commands). Used to follow
-what an agent just edited. At most 2000 items. Result: `{ "count" }`.
-`changes/clear` takes `{}`.
+Params: `{ "list", "title", "items": [{ "path", "line", "col"?, "endLine"?,
+"label"?, "note"? }], "activate"?: true, "goto"?: 0 }`.
+
+Replaces a named list of places the user can walk with `:bb-next` and
+`:bb-prev` and browse with `:bb-locations` (see Commands). Two list names are
+conventional: `changes` (what an agent just edited) and `tour` (places an
+agent wants to show, in order, each with a `note` explaining it). Any other
+name is allowed. `activate` makes it the list the walk commands use; `goto`
+also jumps to that item (subject to `interrupt`, see `editor/open`). While
+the user stands on an item, its `note` shows on the status line. At most 2000
+items. Result: `{ "count" }`. `locations/clear` takes `{ "list"? }`.
+
+### view/list
+
+Params: `{}`. Result: `{ "views": [{ "viewId", "docId", "path", "focused",
+"area": { "x", "y", "width", "height" }, "firstLine", "lastLine" }],
+"layout": Node }` where `Node` is `{ "split": "horizontal" | "vertical",
+"children": [Node] }` or `{ "viewId" }`. A view is one pane.
+
+### view/focus, view/close
+
+Params: `{ "viewId" }`. `view/close` closes the pane, not the buffer, and
+refuses to close the last one (`unsupported`). Result: `{}`.
+
+### editor/select
+
+Params: `{ "viewId"?, "ranges": [Range], "primary"?: 0, "center"?: true }`.
+Sets the selections of a view (default: the focused one) and scrolls them
+into view. Result: `{ "version" }`.
+
+### editor/command
+
+The general control method: anything the user can do from the keyboard.
+Params, exactly one of:
+
+- `{ "typed": "vsplit src/main.go" }`: a typed command line, without the
+  leading colon.
+- `{ "static": "goto_definition", "count"?: 1 }`: a named editor command, the
+  names Helix's key maps use.
+- `{ "keys": "<space>f" }`: key events in Helix's own key notation, handled
+  as if typed.
+
+Result: `{ "status"?: { "message", "severity" } }` with whatever the command
+put on the status line. Subject to the command policy below; a refused
+command fails with `unsupported` and `data.reason`.
+
+**Command policy** (`[editor.bridge] commands`, enforced in Helix):
+
+| Value | Allows |
+|---|---|
+| `"safe"` (default) | every command except those that run a shell (`sh`, `run-shell-command`, `pipe`, `pipe-to`, `insert-output`, `append-output`, and their static equivalents), shell expansions in typed lines, and the force variants that discard unsaved work (`quit!`, `quit-all!`, `buffer-close!`, `buffer-close-all!`, `buffer-close-others!`, `reload!` on a modified buffer, `cquit!`) |
+| `"all"` | everything |
+| `"none"` | `editor/command` is disabled |
+
+`keys` are checked after key-map resolution, command by command, under the
+same policy; a sequence that opens the command prompt is allowed only up to
+what the policy would allow as `typed`.
 
 ### annotations/set
 
@@ -234,8 +298,9 @@ dropped and the client receives `event/overflow` `{ "dropped": N }`.
 | `:bb-ask <question>` | Emits `event/send` with `kind: "ask"` and `sendNow: true`. |
 | `:bb-comment [text]` | Emits `event/send` with `kind: "comment"`: a review comment on the selected lines, kept by the client until flushed. With no text it opens a one-line `comment:` prompt and emits on Enter; Escape cancels. |
 | `:bb-comments-send` | Emits `event/send` with `kind: "flush"`: send every pending comment to the thread. |
-| `:bb-changes` | Opens a picker over the list set by `changes/set`. |
-| `:bb-next-change`, `:bb-prev-change` | Jump through that list. |
+| `:bb-locations [list]` | Opens a picker over a list set by `locations/set` (default: the active one) and makes it active. |
+| `:bb-next`, `:bb-prev` | Jump through the active list. |
+| `:bb-go` | Performs the pending jump a client requested while the user was busy. |
 | `:bb-status` | Shows the socket path and connected clients. |
 
 When no client is subscribed to `send`, these commands fail with a status-line
@@ -253,6 +318,7 @@ overrides key bindings, and it reads the user's normal Helix configuration.
 ```toml
 [editor.bridge]
 enable = true          # default in this fork; false disables the socket entirely
+commands = "safe"      # what editor/command may run: "safe", "all" or "none"
 ```
 
 `HELIX_BRIDGE=0` in the environment also disables it.
