@@ -10,6 +10,7 @@ pub mod interrupt;
 pub mod locations;
 pub mod lsp;
 pub mod reload;
+pub mod reveal;
 pub mod send;
 pub mod views;
 
@@ -21,6 +22,7 @@ pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
         .iter()
         .chain(locations::COMMANDS)
         .chain(interrupt::COMMANDS)
+        .chain(annotations::COMMANDS)
 }
 
 /// Hooks of the later-step modules, registered when the bridge starts.
@@ -29,4 +31,6 @@ pub fn register_hooks() {
     diagnostics::register_hooks();
     lsp::register_hooks();
     interrupt::register_hooks();
+    annotations::register_hooks();
+    reveal::register_hooks();
 }

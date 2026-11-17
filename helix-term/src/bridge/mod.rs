@@ -20,6 +20,7 @@ use helix_view::{DocumentId, Editor};
 use parking_lot::Mutex;
 use tokio::task::AbortHandle;
 
+pub use methods::annotations::decorate;
 pub use methods::typable_commands;
 
 runtime_local! {
