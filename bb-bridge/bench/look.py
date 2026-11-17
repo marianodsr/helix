@@ -431,6 +431,22 @@ def review_scenes(s, which, theme):
         s.goto(28)
         s.snap(f"r07-narrow-split-{tag}")
         s.tmux.keys("C-w", "o")
+    if want("review-watch"):
+        # an agent writes while the owner reviews: the watch reloads, the
+        # reveal plays over the inline diff
+        s.goto(26)
+        time.sleep(0.3)
+        with open(s.path) as f:
+            text = f.read()
+        text = text.replace("\tcfg := &Config{Replicas: 1}\n",
+                            "\tcfg := &Config{Replicas: 1}\n\t// the agent added this line\n\tcfg.Tags = nil\n")
+        tmp = s.path + ".tmp~"
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.rename(tmp, s.path)
+        s.snap(f"r09-watch-reveal-start-{tag}", delay=0.12)
+        s.snap(f"r10-watch-reveal-mid-{tag}", delay=0.25)
+        s.snap(f"r11-watch-reveal-done-{tag}", delay=1.2)
     if want("review-picker"):
         s.tmux.keys(":bb-review", "Enter")
         time.sleep(0.6)

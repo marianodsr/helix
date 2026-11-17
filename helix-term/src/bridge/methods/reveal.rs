@@ -471,8 +471,11 @@ impl Decoration for Fresh<'_> {
 /// Helix draws indent guides and soft-wrap indicators on every visual line,
 /// and they are not part of the text the overlays cover, so on a line still
 /// covered they would show before its text. After each visual line whose
-/// text is all still covered, this blanks the row (a plain space, no style,
-/// so cursor, selection and cursorline backgrounds stay).
+/// text is all still covered, this blanks the row; on a line partly
+/// uncovered, it blanks the covered cells, which the overlay draws in the
+/// theme's background colour and which would show on a line with a
+/// background of its own (the inline diff's). A plain space, no style, so
+/// cursor, selection, cursorline and diff backgrounds stay.
 struct Hide<'a> {
     text: RopeSlice<'a>,
     /// Sorted by `char_idx`.
@@ -482,6 +485,8 @@ struct Hide<'a> {
     row: Option<u16>,
     covered: bool,
     shown: bool,
+    /// Covered cells of the row: (screen x, width).
+    cells: Vec<(u16, u16)>,
 }
 
 impl Hide<'_> {
@@ -505,7 +510,7 @@ impl Decoration for Hide<'_> {
 
     fn decorate_grapheme(
         &mut self,
-        _renderer: &mut TextRenderer,
+        renderer: &mut TextRenderer,
         grapheme: &FormattedGrapheme,
     ) -> usize {
         let row = grapheme.visual_pos.row as u16;
@@ -513,6 +518,7 @@ impl Decoration for Hide<'_> {
             self.row = Some(row);
             self.covered = false;
             self.shown = false;
+            self.cells.clear();
         }
         // A virtual grapheme (a wrap indicator, an inlay hint) carries the
         // index of the document grapheme after it, which the next call skips:
@@ -525,6 +531,11 @@ impl Decoration for Hide<'_> {
                 .is_ok()
             {
                 self.covered = true;
+                let (col, width) = (grapheme.visual_pos.col, grapheme.width());
+                if !grapheme.is_virtual() && renderer.column_in_bounds(col, width) {
+                    let x = renderer.viewport.x + (col - renderer.offset.col) as u16;
+                    self.cells.push((x, width as u16));
+                }
             } else {
                 let ch = self.text.char(at);
                 self.shown |= !(char_is_whitespace(ch) || char_is_line_ending(ch));
@@ -539,10 +550,17 @@ impl Decoration for Hide<'_> {
         pos: LinePos,
         _virt_off: helix_core::Position,
     ) -> helix_core::Position {
-        if self.row == Some(pos.visual_line) && self.covered && !self.shown {
-            let viewport = renderer.viewport;
-            let blank = " ".repeat(viewport.width as usize);
-            renderer.set_string(viewport.x, pos.visual_line, &blank, Style::default());
+        if self.row == Some(pos.visual_line) && self.covered {
+            if !self.shown {
+                let viewport = renderer.viewport;
+                let blank = " ".repeat(viewport.width as usize);
+                renderer.set_string(viewport.x, pos.visual_line, &blank, Style::default());
+            } else {
+                for &(x, width) in &self.cells {
+                    let blank = " ".repeat(width as usize);
+                    renderer.set_string(x, pos.visual_line, &blank, Style::default());
+                }
+            }
         }
         helix_core::Position::new(0, 0)
     }
@@ -570,6 +588,7 @@ pub(super) fn decorate<'d>(
             row: None,
             covered: false,
             shown: false,
+            cells: Vec::new(),
         });
     }
     if reveal.fresh.is_empty() {

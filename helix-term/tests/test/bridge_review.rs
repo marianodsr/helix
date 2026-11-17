@@ -544,3 +544,64 @@ async fn another_repository_and_files_outside_keep_head() -> anyhow::Result<()> 
     bridge.finish().await?;
     Ok(())
 }
+
+/// The normal case: an agent edits a file while the owner reviews it. The
+/// watch reloads it, the base stays the review's (not `HEAD`), the reveal
+/// and the inline diff are both on, and `event/reloaded` goes out.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watched_reload_during_a_review_keeps_its_base() -> anyhow::Result<()> {
+    let repo = Repo::new();
+    let a = repo.path("a.txt");
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(&a, None))?;
+    let (files, base, a_s) = (repo.files(), repo.base.clone(), repo.s("a.txt"));
+    let now = std::fs::read_to_string(&a)?;
+    let edited = now.replace("a line 3\n", "a line 3\nthe agent wrote this\n");
+    let edited2 = edited.clone();
+    let reloaded = bridge
+        .run(move |_, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["documents"]).await?;
+            c.call(
+                "review/set",
+                json!({ "id": "r", "title": "Branch", "base": { "rev": base }, "files": files }),
+            )
+            .await?;
+            settle().await;
+            // written the way editors and agents write: a new file renamed over
+            let tmp = format!("{a_s}.tmp~");
+            std::fs::write(&tmp, &edited2)?;
+            std::fs::rename(&tmp, &a_s)?;
+            let ev = c.event("event/reloaded").await?;
+            settle().await;
+            let t = c.call("editor/text", json!({ "path": a_s })).await?;
+            assert_eq!(t["text"], edited2.as_str());
+            Ok(ev)
+        })
+        .await?;
+    assert_eq!(reloaded["origin"], "watch");
+    assert_eq!(reloaded["ranges"][0]["start"]["line"], 4);
+    let at_base: String = (1..=20).map(|i| format!("a line {i}\n")).collect();
+    assert_eq!(
+        base_of(&bridge.app.editor, &a).as_deref(),
+        Some(at_base.as_str()),
+        "still the review's base after the reload"
+    );
+    // line 5 changed and line 10 removed since the base, a line added at the
+    // end, and the agent's line: four hunks against the base
+    assert_eq!(hunks_of(&bridge.app.editor, &a).len(), 4);
+    assert!(inline_diff());
+    let doc = doc!(bridge.app.editor);
+    assert_eq!(doc.text().to_string(), edited);
+    assert!(doc.bridge_annotations.reveal.is_some(), "the reveal plays");
+    // a frame with both drawn (the harness renders after every event)
+    bridge
+        .run(|keys, _| async move {
+            keys.send("j")?;
+            settle().await;
+            Ok(())
+        })
+        .await?;
+    bridge.finish().await?;
+    Ok(())
+}
