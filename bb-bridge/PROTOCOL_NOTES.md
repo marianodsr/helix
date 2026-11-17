@@ -505,6 +505,61 @@ should know about.
   file-system calls), and files that are not open (each name stays what the
   request said).
 
+## Files changing on disk (step 6, capability `watch`)
+
+- **Platforms**: macOS. Elsewhere `watch` is not offered (not in
+  `bridge/hello`); `editor/reload` and the focus check work as before.
+  `watch` is listed only while the watch runs: not with `[editor.bridge]
+  watch = false`, not with `HELIX_BRIDGE=0`.
+- **How**: kqueue, on one thread that sleeps in the kernel until a watched
+  file or directory changes (no timer, no polling). Watched: the file of
+  every open buffer (written in place, deleted, renamed, revoked) and its
+  directory, not recursively (an entry created, removed or renamed: an
+  editor's write-then-rename, a delete and create), and when the buffer's
+  path goes through a symlink, the real file's directory too. A directory
+  event stats only the watched files in it.
+- **Which files**: exactly the open buffers that have a path, updated when a
+  buffer is opened or closed, after a save (`:write <path>` gives the buffer
+  a new path) and after each reload batch (`:move`). A buffer's file that
+  does not exist (deleted, or a new file not yet written) is watched through
+  its directory and picked up when it appears.
+- **A directory renamed or deleted**: its buffers' files are reported
+  deleted (the status line says so, the buffers are kept). If the directory
+  comes back, its files are watched again at the next open, close or save
+  of a buffer or the next focus check, not at once (nothing watches the
+  directory above).
+- **Coalescing**: changes within 30 ms of the first are one batch; a write
+  that lands while a batch is being reloaded starts the next batch. Before
+  reloading, the batch waits (up to 2 s) for any save Helix has in flight
+  to be recorded, so Helix's own write is recognised: its file then has the
+  mtime Helix recorded and nothing is reloaded or announced.
+- **What a change does**: the same as `editor/reload` for those paths
+  (without `force`): clean buffers reload, with the reveal animation if
+  `[editor.bridge] reveal` is on (it ends at the next key or edit, and a
+  newer change replaces it); buffers with unsaved changes are untouched, get
+  `event/externalChange` and a status-line warning once per change on disk;
+  a deleted file gets a status-line note once. With the content unchanged
+  (a `touch`, a rewrite with the same text) nothing happens.
+- **Descriptors**: one per watched file and one per watched directory. When
+  the watch starts, the soft `RLIMIT_NOFILE` is raised to 10240 (or the
+  hard limit, if lower); macOS sessions often start at 256. The watch uses
+  at most half of the soft limit. Files beyond that are not watched: logged
+  once, counted in `:bb-status` ("watching N files (M over the descriptor
+  limit)"), still covered by the focus check and `editor/reload`.
+- **Focus check**: unchanged; after a watched reload the buffer's mtime is
+  the file's, so the focus check finds nothing to do. It also refreshes the
+  set of watched files.
+- **`event/reloaded`** (kind `documents`): after every reload, whatever its
+  origin (`request`, `focus`, `watch`), after the document's pending
+  `event/documentChanged`. `ranges` are the inserted text in the new
+  document (empty when the change only removed text); `removed` is the
+  number of removed lines, as the reveal shows them struck through.
+  `version` is the version after the reload.
+- Latency, release build under a pty (`live.py watch`): from the end of a
+  write to `event/reloaded` p50 33 ms (30 ms of it is the coalescing
+  window), to the new text in the terminal output (reveal off) p50 40 ms,
+  p90 47 ms; the same for a rename-over write.
+
 # Protocol notes (step 2b: diagnostics and language servers)
 
 ## diagnostics/get

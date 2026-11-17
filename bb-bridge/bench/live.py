@@ -41,6 +41,7 @@ from bridge_client import Client, RpcError  # noqa: E402
 from rtt import fmt, measure  # noqa: E402
 import live_lsp  # noqa: E402  (step 2b)
 import redraw  # noqa: E402  (integration step)
+import live_watch  # noqa: E402  (step 6: the watch)
 
 ESC = "\x1b"
 ENTER = "\r"
@@ -441,7 +442,9 @@ def _verify_2a(sb, hx, check, reg):
 
 def verify(args):
     check = Checks()
-    sb = Sandbox()
+    # the step 1 and 2a checks rewrite files and drive editor/reload
+    # themselves; the watch has its own section (live_watch.py)
+    sb = Sandbox(extra_config="[editor.bridge]\nwatch = false\n")
     hx = sb.start(args.hx, BB_THREAD_ID="thr_live", BB_PROJECT_ID="proj_live")
     try:
         _verify(args, sb, hx, check)
@@ -452,6 +455,7 @@ def verify(args):
     _verify_2c(args, check)
     verify_annotations_reveal(args, check)
     verify_files(args, check)
+    live_watch.verify(args, Sandbox, check)
     # --- step 2b: diagnostics and lsp (bb-bridge/bench/live_lsp.py) ---
     live_lsp.verify(args, Sandbox, check)
     # --- end step 2b ---
@@ -904,6 +908,13 @@ def verify_files(args, check):
             sb.cleanup()
 
 
+def watch_only(args):
+    check = Checks()
+    live_watch.verify(args, Sandbox, check)
+    print(f"\n{check.passed} passed, {check.failed} failed")
+    return 1 if check.failed else 0
+
+
 def verify_files_only(args):
     check = Checks()
     verify_files(args, check)
@@ -1325,7 +1336,7 @@ def snapshot(directory):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["verify", "files", "bench", "compat", "lspbench", "lspbig", "redraw"])
+    ap.add_argument("mode", choices=["verify", "files", "bench", "compat", "lspbench", "lspbig", "redraw", "watch"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
@@ -1342,7 +1353,7 @@ def main():
     args = ap.parse_args()
     modes = {"verify": verify, "files": verify_files_only, "bench": bench, "compat": compat,
              "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),
-             "redraw": lambda a: redraw.bench(a, Sandbox)}
+             "redraw": lambda a: redraw.bench(a, Sandbox), "watch": watch_only}
     sys.exit(modes[args.mode](args))
 
 
