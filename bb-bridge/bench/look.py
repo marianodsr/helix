@@ -288,6 +288,23 @@ def scenes(s, which):
         )
         s.goto(20)
         s.snap("07-soft-wrapped-line")
+    if want("eof"):
+        # a file longer than the view, no final newline, a note on its last
+        # line taller than scrolloff: the view makes room for it
+        eof = os.path.join(s.repo, "eof.go")
+        with open(eof, "w") as f:
+            f.write((GO.rstrip("\n") + "\n\n") * 2 + "// the end, no newline after this line")
+        eof = os.path.realpath(eof)
+        s.call("editor/open", {"path": eof})
+        lines = len(open(eof).read().split("\n"))
+        s.call("annotations/set", {"namespace": "review", "path": eof, "items": [{
+            "line": lines, "kind": "note",
+            "text": "\n".join(f"Row {i} of a note on the last line of a file without a final newline." for i in range(1, 9)),
+        }]})
+        s.tmux.keys("g", "e")
+        s.snap("12-last-line-no-newline")
+        s.call("annotations/clear", {"namespace": "review", "path": eof})
+        s.call("editor/open", {"path": s.path})
     if want("reveal"):
         s.call("annotations/clear", {"namespace": "review"})
         s.goto(30)

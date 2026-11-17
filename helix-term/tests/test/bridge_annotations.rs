@@ -515,3 +515,69 @@ async fn reveal_follow_opens_and_moves() -> anyhow::Result<()> {
     bridge.finish().await?;
     Ok(())
 }
+
+/// The last line of a file without a final newline gets no virtual lines;
+/// with the cursor on it, the view scrolls so its annotation is not cut off
+/// at the bottom.
+#[tokio::test(flavor = "multi_thread")]
+async fn last_line_without_newline_keeps_its_annotation_in_view() -> anyhow::Result<()> {
+    use helix_core::visual_offset_from_anchor;
+
+    let text: String = (1..=300)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let file = helpers::temp_file_with_contents(&text)?;
+    let p = canonical(file.path());
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(file.path(), None))?;
+    let rows = 10;
+    let note: String = (1..=rows)
+        .map(|i| format!("row {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bridge
+        .run(|keys, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            let r = c
+                .call(
+                    "annotations/set",
+                    json!({ "namespace": "review", "path": p, "items": [{ "line": 300, "text": note }] }),
+                )
+                .await?;
+            assert_eq!(r["count"], 1);
+            keys.send("ge")?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while c.call("editor/state", json!({})).await?["focused"]["selections"][0]["start"]
+                ["line"]
+                != 300
+            {
+                anyhow::ensure!(std::time::Instant::now() < deadline, "ge did not move");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(())
+        })
+        .await?;
+
+    let editor = &bridge.app.editor;
+    let (view, doc) = (view!(editor), doc!(editor));
+    let text = doc.text().slice(..);
+    let area = view.inner_area(doc);
+    let offset = doc.view_offset(view.id);
+    let (end, _) = visual_offset_from_anchor(
+        text,
+        offset.anchor,
+        text.len_chars(),
+        &doc.text_format(area.width, None),
+        &view.text_annotations(doc, None),
+        usize::MAX,
+    )
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let last_row = end.row - offset.vertical_offset;
+    assert!(
+        last_row + 1 + rows <= area.height as usize,
+        "the last line is on row {last_row} of {}; its {rows} annotation rows must fit below it",
+        area.height
+    );
+    bridge.finish().await?;
+    Ok(())
+}

@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::future::BoxFuture;
 use helix_core::command_line::Signature;
@@ -17,7 +18,10 @@ use helix_core::diagnostic::Severity;
 use helix_core::doc_formatter::FormattedGrapheme;
 use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
-use helix_core::{line_ending::line_end_char_index, Position, RopeSlice};
+use helix_core::{
+    char_idx_at_visual_offset, line_ending::line_end_char_index, visual_offset_from_anchor,
+    Position, RopeSlice,
+};
 use helix_event::{register_hook, runtime_local};
 use helix_view::annotations::bridge::{
     self as data, code_indent, place, shown, wrap, Item, Kind, RemovedLine, BAR_WIDTH,
@@ -25,7 +29,8 @@ use helix_view::annotations::bridge::{
 use helix_view::editor::GutterType;
 use helix_view::events::{DocumentDidChange, DocumentDidOpen};
 use helix_view::graphics::{Color, Modifier, Rect, Style};
-use helix_view::{Document, Editor, Theme, View};
+use helix_view::view::ViewPosition;
+use helix_view::{doc, doc_mut, view, Document, Editor, Theme, View};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -36,6 +41,7 @@ use crate::bridge::protocol::{parse_params, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
 use crate::commands::typed::{CommandCompleter, TypableCommand};
 use crate::compositor;
+use crate::events::PostCommand;
 use crate::ui::document::{LinePos, TextRenderer};
 use crate::ui::text_decorations::{Decoration, DecorationManager};
 use crate::ui::PromptEvent;
@@ -130,6 +136,8 @@ type Pending = HashMap<PathBuf, Vec<(String, Vec<ItemParams>)>>;
 
 runtime_local! {
     static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+    /// Some annotation was set in this process: the key hook has work.
+    static USED: AtomicBool = AtomicBool::new(false);
 }
 
 /// Annotation text as it is drawn: no tabs or control characters, no
@@ -199,6 +207,9 @@ fn to_item(text: RopeSlice, p: &ItemParams) -> Item {
 }
 
 fn set_on_doc(doc: &mut Document, namespace: &str, items: &[ItemParams]) -> usize {
+    if !items.is_empty() {
+        USED.store(true, Ordering::Relaxed);
+    }
     let text = doc.text().slice(..);
     let items = items.iter().map(|p| to_item(text, p)).collect();
     doc.bridge_annotations.set(namespace, items)
@@ -213,8 +224,12 @@ pub fn set(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
         validate(&mut params.items)?;
         let path = resolve_path(&params.path, &cx.shared.info.workspace_root);
         let on_disk = tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file());
-        let count =
-            on_editor(move |editor, _| set_on_main(editor, &path, on_disk, params)).await??;
+        let count = on_editor(move |editor, _| {
+            let count = set_on_main(editor, &path, on_disk, params);
+            show_last_line_rows(editor);
+            count
+        })
+        .await??;
         Ok(json!({ "count": count }))
     })
 }
@@ -276,8 +291,92 @@ pub fn clear(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     })
 }
 
+/// The last line of a document gets no virtual lines (Helix lays them out
+/// after a line ending), so its annotation is drawn in the empty rows below
+/// the end of the text, and was cut off when that line sat at the bottom of
+/// the view. The rows of any other line come into view when the cursor moves
+/// down past them; here, while the cursor is on the last line, the view
+/// scrolls just enough for them to fit, never pushing the cursor line out.
+fn show_last_line_rows(editor: &mut Editor) {
+    let view = view!(editor);
+    let doc = doc!(editor, &view.doc);
+    let items = doc.bridge_annotations.items();
+    if items.is_empty() || !shown() {
+        return;
+    }
+    let text = doc.text().slice(..);
+    let last = text.len_lines() - 1;
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    if text.char_to_line(cursor) != last {
+        return;
+    }
+    let viewport = view.inner_area(doc);
+    let width = viewport.width as usize;
+    let rows: usize = items
+        .iter()
+        .filter(|item| item.last_line == last)
+        .map(|item| data::item_rows(text, item, width, doc.tab_width()))
+        .sum();
+    if rows == 0 {
+        return;
+    }
+    // Helix brings the cursor into view after the hooks; do it first (it
+    // changes nothing the second time).
+    let view_id = view.id;
+    editor.ensure_cursor_in_view(view_id);
+    let view = view!(editor);
+    let doc = doc!(editor, &view.doc);
+    let text = doc.text().slice(..);
+    let height = viewport.height as usize;
+    let offset = doc.view_offset(view.id);
+    let text_fmt = doc.text_format(viewport.width, None);
+    let annotations = view.text_annotations(doc, None);
+    let row_of = |pos| {
+        visual_offset_from_anchor(
+            text,
+            offset.anchor,
+            pos,
+            &text_fmt,
+            &annotations,
+            offset.vertical_offset + height,
+        )
+        .ok()
+        .map(|(p, _)| p.row.saturating_sub(offset.vertical_offset))
+    };
+    let (Some(end_row), Some(cursor_row)) = (row_of(text.len_chars()), row_of(cursor)) else {
+        return;
+    };
+    let shift = (end_row + 1 + rows).saturating_sub(height).min(cursor_row);
+    if shift == 0 {
+        return;
+    }
+    let (anchor, vertical_offset) = char_idx_at_visual_offset(
+        text,
+        offset.anchor,
+        (offset.vertical_offset + shift) as isize,
+        0,
+        &text_fmt,
+        &annotations,
+    );
+    drop(annotations);
+    doc_mut!(editor, &view.doc).set_view_offset(
+        view_id,
+        ViewPosition {
+            anchor,
+            vertical_offset,
+            ..offset
+        },
+    );
+}
+
 /// Hooks this module needs (registered when the bridge starts).
 pub fn register_hooks() {
+    register_hook!(move |event: &mut PostCommand<'_, '_>| {
+        if USED.load(Ordering::Relaxed) {
+            show_last_line_rows(event.cx.editor);
+        }
+        Ok(())
+    });
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         let doc = &mut *event.doc;
         if !doc.bridge_annotations.items().is_empty() {
@@ -721,7 +820,7 @@ pub fn decorate<'d>(
         decorations.add_decoration(Annotations::new(doc, view, theme, removed));
     }
     if let Some(reveal) = &this.reveal {
-        super::reveal::decorate(reveal, theme, decorations);
+        super::reveal::decorate(reveal, doc.text().slice(..), theme, decorations);
     }
 }
 
