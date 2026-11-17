@@ -207,17 +207,9 @@ install_archive() {
     case $top in hxb-*) ;; *) die "$archive does not look like an hxb archive (top directory '$top')" ;; esac
 
     lib=$prefix/lib/hxb
-    if [ "$dry_run" = 1 ]; then
-        mkdir -p "$work/peek"
-        tar -xzf "$archive" -C "$work/peek" "$top/MANIFEST"
-        manifest=$work/peek/$top/MANIFEST
-    else
-        mkdir -p "$lib"
-        incoming=$lib/.incoming-$$
-        mkdir "$incoming"
-        tar -xzf "$archive" -C "$incoming"
-        manifest=$incoming/$top/MANIFEST
-    fi
+    mkdir -p "$work/peek"
+    tar -xzf "$archive" -C "$work/peek" "$top/MANIFEST" 2>/dev/null || true
+    manifest=$work/peek/$top/MANIFEST
     [ -f "$manifest" ] || die "$archive has no MANIFEST"
     version=$(manifest_get version "$manifest")
     label=$(manifest_get label "$manifest")
@@ -231,18 +223,22 @@ install_archive() {
     esac
     dest=$lib/$version-$label
 
+    if [ -d "$dest" ]; then
+        skipped "hxb $version ($label): already installed in $dest"
+        config_src=$dest/config
+        return 0
+    fi
     if [ "$dry_run" = 1 ]; then
-        if [ -d "$dest" ]; then
-            skipped "hxb $version ($label): already installed in $dest"
-        else
-            say "    would unpack to $dest (after checking every file against SHA256SUMS)"
-            did "installed hxb $version ($label) in $dest"
-        fi
+        say "    would unpack to $dest (after checking every file against SHA256SUMS)"
+        did "installed hxb $version ($label) in $dest"
         config_src=${checkout:+$checkout/bb-bridge/config}
-        [ -d "$dest/config" ] && config_src=$dest/config
         return 0
     fi
 
+    mkdir -p "$lib"
+    incoming=$lib/.incoming-$$
+    mkdir "$incoming"
+    tar -xzf "$archive" -C "$incoming"
     pkg=$incoming/$top
     (cd "$pkg" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1) ||
         die "files in $archive do not match its SHA256SUMS"
@@ -256,14 +252,9 @@ install_archive() {
         "$pkg/hxb" --version 2>&1) || die "the unpacked hxb does not run: $got"
     say "    $got"
 
-    if [ -d "$dest" ]; then
-        rm -rf "$incoming"
-        skipped "hxb $version ($label): already installed in $dest"
-    else
-        mv "$pkg" "$dest"
-        rm -rf "$incoming"
-        did "installed hxb $version ($label) in $dest"
-    fi
+    mv "$pkg" "$dest"
+    rm -rf "$incoming"
+    did "installed hxb $version ($label) in $dest"
     config_src=$dest/config
 }
 
@@ -364,6 +355,14 @@ install_config() {
 # ---------------------------------------------------------------------------
 # bb plugins and doctor
 
+# Whether `bb plugin list --json` ($installed) has a plugin with this id.
+plugin_listed() {
+    case $installed in
+        *"\"id\": \"$1\""* | *"\"id\":\"$1\""*) return 0 ;;
+    esac
+    return 1
+}
+
 install_plugins() {
     if [ "$no_plugins" = 1 ]; then
         skipped "bb plugins: --no-plugins"
@@ -392,7 +391,7 @@ install_plugins() {
         return 0
     fi
     for id in $PLUGINS; do
-        if printf '%s\n' "$installed" | grep -Eq "\"id\": *\"$id\""; then
+        if plugin_listed "$id"; then
             skipped "bb plugin $id: already installed (update it with: bb plugin update $id)"
         elif act bb plugin install "$PLUGINS_SOURCE" --subdirectory "plugins/$id" --yes </dev/null; then
             did "installed the bb plugin $id"
