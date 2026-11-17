@@ -165,6 +165,11 @@ pub fn document_saved(editor: &Editor, doc: DocumentId) {
     events::document_saved(editor, doc);
 }
 
+/// The terminal regained focus: reload buffers changed on disk meanwhile.
+pub fn focus_gained(editor: &mut Editor) {
+    methods::reload::focus_gained(editor);
+}
+
 pub(crate) fn shared() -> Option<&'static Arc<Shared>> {
     BRIDGE.get().filter(|s| !s.is_stopped())
 }

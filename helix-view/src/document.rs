@@ -2815,3 +2815,10 @@ mod test {
     decode!(shift_jis_decode, "shift_jis");
     encode!(shift_jis_encode, "shift_jis");
 }
+
+// bb bridge: the mtime Helix last read or wrote, to notice external changes.
+impl Document {
+    pub fn last_saved_time(&self) -> SystemTime {
+        self.last_saved_time
+    }
+}

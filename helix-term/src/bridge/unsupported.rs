@@ -11,6 +11,8 @@ pub fn stop() {}
 
 pub fn document_saved(_editor: &Editor, _doc: DocumentId) {}
 
+pub fn focus_gained(_editor: &mut Editor) {}
+
 pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
     std::iter::empty()
 }
