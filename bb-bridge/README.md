@@ -111,6 +111,7 @@ All are typed commands (`:bb-…`) and complete on the command line.
 | `:bb-next`, `:bb-prev` | next or previous item of the active list |
 | `:bb-go` | go where the agent asked to take you while you were typing |
 | `:bb-annotations` | show or hide the agent's comments drawn in the code |
+| `:bb-files` | the file tree: bb's own inside bb, otherwise the file manager (yazi) full screen, opening what you pick |
 
 ### Key bindings
 
@@ -136,6 +137,20 @@ Copy the lines you want into `~/.config/helix/config.toml`.
 enable = true       # listen on the socket (default true)
 commands = "safe"   # what editor/command may run: safe (default), all, none
 reveal = true       # animate text an agent just wrote (default true)
+# what :bb-files runs outside bb; {chooser} is the file it writes the picked
+# paths to, {path} the focused file
+file-manager = ["yazi", "--chooser-file", "{chooser}", "{path}"]
+```
+
+To open the tree on `space e` (Helix's own file explorer otherwise), bind it
+in both modes:
+
+```toml
+[keys.normal.space]
+e = ":bb-files"
+
+[keys.select.space]
+e = ":bb-files"
 ```
 
 | Environment | |

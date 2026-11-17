@@ -100,6 +100,10 @@ const REFUSED_TYPED: &[(&str, &str)] = &[
     ("bb-ask", SPEAKS),
     ("bb-comment", SPEAKS),
     ("bb-comments-send", SPEAKS),
+    (
+        "bb-files",
+        "runs the file manager program when bb shows no tree",
+    ),
 ];
 
 /// Typed commands `safe` refuses only in some states (see `check_typed_args`),

@@ -61,7 +61,8 @@ should know about.
   they report `"version": null, "modified": false`.
 - `events/subscribe` and `events/unsubscribe` return the client's whole
   subscription set after the change, in this order: `selection`,
-  `documents`, `diagnostics`, `mode`, `send`, `lsp`, `externalChange`. An
+  `documents`, `diagnostics`, `mode`, `send`, `lsp`, `externalChange`,
+  `files`. An
   unknown kind fails the whole request (`invalid_params`,
   `field: "events"`) and changes nothing.
 
@@ -640,3 +641,30 @@ should know about.
   `:lsp-restart` or `:lsp-stop`, which Helix drops without an exit event:
   those are reported when the next server initializes or at the next key
   press.
+
+## `:bb-files`
+
+- **With a client subscribed to `files`**: `event/files` `{ "path", "docId",
+  "cwd" }` and nothing else (no status message). `path` is null for a
+  scratch buffer; `cwd` is Helix's working directory when the command ran.
+- **With none**, the file manager runs in the terminal Helix runs in, at the
+  start of the next frame: Helix leaves the alternate screen, turns off
+  mouse capture, focus reporting, bracketed paste and the keyboard protocol,
+  and returns to cooked mode (what it does for its own suspend), runs the
+  program with the terminal as its stdin, stdout and stderr and waits for
+  it, then takes the terminal back and redraws everything. While it runs,
+  Helix does nothing else: bridge requests made meanwhile time out after
+  2 s, and Helix's input reader is stopped so every key goes to the program.
+  The program runs in Helix's process group; yazi and other full-screen
+  programs put the terminal in raw mode, so Ctrl-C is a key for them.
+- `{chooser}` is a fresh file in the system temp directory, removed
+  afterwards; `{path}` is the focused file, or Helix's working directory for
+  a scratch buffer. Each line the program wrote is a path (relative paths
+  against the working directory); files open in that order, the first in
+  the focused pane and the rest in the background. Directories are skipped
+  with a warning. An empty or missing chooser file is a cancel: nothing
+  changes, no message. The exit status is not looked at.
+- A program that is not on `PATH` (or an empty `file-manager`) is a
+  status-line error and the terminal is not touched.
+- `editor/command` refuses `bb-files` under `safe` (it runs a program);
+  under `all` it runs as the user's own key press would.

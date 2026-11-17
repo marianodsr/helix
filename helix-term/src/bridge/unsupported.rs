@@ -34,3 +34,10 @@ pub fn skip_render() -> bool {
 pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
     std::iter::empty()
 }
+
+pub fn hand_over_terminal<B: tui::backend::Backend>(
+    _terminal: &mut tui::terminal::Terminal<B>,
+    _editor: &mut Editor,
+    _compositor: &mut crate::compositor::Compositor,
+) {
+}
