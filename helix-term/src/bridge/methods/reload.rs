@@ -26,6 +26,7 @@ use futures_util::future::BoxFuture;
 use helix_core::{diff::compare_ropes, encoding::Encoding, Rope, Transaction};
 use helix_event::runtime_local;
 use helix_vcs::DiffProviderRegistry;
+use helix_view::annotations::bridge::RemovedLine;
 use helix_view::{DocumentId, Editor, ViewId};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -34,8 +35,10 @@ use serde_json::Value;
 use crate::bridge::convert::{path_string, pos_from_char, resolve_path};
 use crate::bridge::dispatch::on_editor;
 use crate::bridge::events::{self, broadcast, DocMeta, Kind, Msg};
-use crate::bridge::methods::locations::{parse_interrupt, request_jump, Interrupt, JumpTarget};
-use crate::bridge::protocol::{parse_params, Range, RpcError, RpcResult};
+use crate::bridge::methods::interrupt::Interrupt;
+use crate::bridge::methods::locations::{request_jump, JumpTarget};
+use crate::bridge::methods::reveal;
+use crate::bridge::protocol::{parse_params, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
 
 pub const CAPABILITY: Option<&str> = Some("reload");
@@ -143,11 +146,12 @@ pub struct Removed {
 
 impl ReloadChanges {
     /// `inserted` as protocol ranges.
-    pub fn ranges(&self, text: &Rope) -> Vec<Range> {
+    #[cfg(test)]
+    pub fn ranges(&self, text: &Rope) -> Vec<crate::bridge::protocol::Range> {
         let s = text.slice(..);
         self.inserted
             .iter()
-            .map(|r| Range {
+            .map(|r| crate::bridge::protocol::Range {
                 start: pos_from_char(s, r.start),
                 end: pos_from_char(s, r.end),
             })
@@ -208,6 +212,50 @@ pub fn reload_changes(old: &Rope, new: &Rope, transaction: &Transaction) -> Relo
     out
 }
 
+/// A reload's reveal animation for one buffer, kept until the view is where
+/// it should play.
+#[derive(Clone)]
+struct PendingReveal {
+    doc: DocumentId,
+    version: i32,
+    inserted: Vec<std::ops::Range<usize>>,
+    removed: Vec<RemovedLine>,
+}
+
+impl PendingReveal {
+    fn new(editor: &Editor, doc: DocumentId, changes: &ReloadChanges) -> Self {
+        PendingReveal {
+            doc,
+            version: editor.document(doc).map_or(0, |d| d.version()),
+            inserted: changes.inserted.clone(),
+            removed: changes
+                .removed
+                .iter()
+                .map(|r| RemovedLine {
+                    line: r.line - 1,
+                    text: r.text.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Play it, unless the buffer changed since the reload (the ranges
+    /// would no longer match its text).
+    fn play(self, editor: &mut Editor) {
+        if editor.document(self.doc).map(|d| d.version()) != Some(self.version) {
+            return;
+        }
+        reveal::play(
+            editor,
+            self.doc,
+            &self.inserted,
+            self.removed,
+            reveal::DEFAULT_DURATION,
+            false,
+        );
+    }
+}
+
 /// What happened to one buffer on the main thread.
 enum Applied {
     Reloaded { changes: ReloadChanges, text: Rope },
@@ -221,7 +269,7 @@ enum Applied {
 pub fn reload(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     Box::pin(async move {
         let params: ReloadParams = parse_params(params)?;
-        let interrupt = parse_interrupt(params.interrupt.as_deref())?;
+        let interrupt = Interrupt::parse(params.interrupt.as_deref())?;
         let root = &cx.shared.info.workspace_root;
         let paths = params
             .paths
@@ -292,26 +340,23 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
     }
 
     let begin = Instant::now();
-    let (applied, deferred, late_external) = on_editor(move |editor, _| {
+    let (applied, deferred, late_external) = on_editor(move |editor, compositor| {
         let main = Instant::now();
         let mut applied = Vec::with_capacity(work.len());
         let mut late_external = Vec::new();
         let mut follow_to = None;
+        let mut reveals = Vec::new();
         for (c, found) in work {
             let outcome = apply(editor, &c, found, origin);
             match &outcome {
                 Applied::Reloaded { changes, text } => {
-                    // REVEAL CALL SITE (step 2d): with `reveal`, the
-                    // coordinator calls `reveal::play(editor, c.doc,
-                    // changes.ranges(text), changes.removed.clone(), 600,
-                    // false)` here, once per reloaded buffer.
                     if let Origin::Request { reveal: true, .. } = origin {
-                        let _ = (changes.ranges(text), &changes.removed);
+                        reveals.push(PendingReveal::new(editor, c.doc, changes));
                     }
                     if follow_to.is_none() {
                         follow_to = changes.first(text).map(|at| {
                             let p = pos_from_char(text.slice(..), at);
-                            (c.path.clone(), p)
+                            (c.doc, c.path.clone(), p)
                         });
                     }
                 }
@@ -331,7 +376,7 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
         } = origin
         {
             deferred = Some(false);
-            if let Some((path, at)) = follow_to {
+            if let Some((doc, path, at)) = follow_to {
                 let target = JumpTarget {
                     path,
                     line: at.line,
@@ -339,11 +384,28 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
                     end_line: None,
                     status: None,
                 };
-                match request_jump(editor, target, interrupt) {
-                    Ok(d) => deferred = Some(d),
-                    Err(err) => editor.set_warning(format!("bb: {err}")),
+                // The followed buffer's reveal plays once the view is there
+                // (now, or on `:bb-go`), so it animates where the user looks.
+                let followed = reveals
+                    .iter()
+                    .position(|r| r.doc == doc)
+                    .map(|i| reveals.remove(i));
+                let replay = followed.clone();
+                let moved_later =
+                    request_jump(editor, compositor, target, interrupt, move |editor| {
+                        if let Some(reveal) = replay {
+                            reveal.play(editor);
+                        }
+                    });
+                if moved_later {
+                    // what is on screen now animates too
+                    reveals.extend(followed);
                 }
+                deferred = Some(moved_later);
             }
+        }
+        for reveal in reveals {
+            reveal.play(editor);
         }
         if origin == Origin::FocusGained && !(external.is_empty() && late_external.is_empty()) {
             let all: Vec<_> = external.iter().chain(&late_external).cloned().collect();
@@ -649,7 +711,7 @@ pub fn focus_gained(editor: &mut Editor) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::protocol::Position;
+    use crate::bridge::protocol::{Position, Range};
 
     fn changes(old: &str, new: &str) -> ReloadChanges {
         let (old, new) = (Rope::from(old), Rope::from(new));

@@ -4,7 +4,7 @@
 //! Lists live in a mutex beside the editor, not in it: the bridge task
 //! replaces them, the typed commands and the note hook read them. Every
 //! jump a client asks for goes through [`request_jump`], the one place the
-//! "not yanking the user" rule (step 2c) applies; jumps the user asks for
+//! "not yanking the user" rule ([`interrupt::jump`]) applies; jumps the user asks for
 //! (`:bb-next`, the picker) call [`jump`] directly.
 
 use std::collections::HashMap;
@@ -21,8 +21,9 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::bridge::convert::{char_from_pos, resolve_path};
+use crate::bridge::convert::{char_after_line, char_from_pos, resolve_path};
 use crate::bridge::dispatch::on_editor;
+use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{parse_params, Position, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
 use crate::commands::typed::{CommandCompleter, TypableCommand};
@@ -167,25 +168,6 @@ runtime_local! {
 
 // --- jumping -----------------------------------------------------------------
 
-/// `interrupt` as sent by a client; validated here, honoured by step 2c.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Interrupt {
-    #[default]
-    WhenIdle,
-    Always,
-}
-
-pub fn parse_interrupt(value: Option<&str>) -> Result<Interrupt, RpcError> {
-    match value {
-        None | Some("whenIdle") => Ok(Interrupt::WhenIdle),
-        Some("always") => Ok(Interrupt::Always),
-        Some(_) => Err(RpcError::invalid_params(
-            "interrupt",
-            "interrupt must be \"whenIdle\" or \"always\"",
-        )),
-    }
-}
-
 /// A place to move the focused view to.
 #[derive(Debug, Clone)]
 pub struct JumpTarget {
@@ -235,18 +217,35 @@ fn exists(editor: &Editor, path: &Path) -> bool {
 }
 
 /// Every jump a client requests (`locations/set` with `goto`,
-/// `editor/reload` with `follow`). Returns whether it was deferred.
-///
-/// STEP 2C CALL SITE: the "not yanking the user" check goes here, before
-/// the jump. Until then every request moves at once.
+/// `editor/reload` with `follow`), through the "not yanking the user" gate:
+/// while the user is busy it becomes the pending jump for `:bb-go`.
+/// `then` runs right after the jump, whenever it happens. Returns whether
+/// it was deferred; a jump that fails is reported on the status line.
 pub fn request_jump(
     editor: &mut Editor,
+    compositor: &mut Compositor,
     target: JumpTarget,
     interrupt: Interrupt,
-) -> Result<bool, JumpError> {
-    let _ = interrupt;
-    jump(editor, &target, Action::Replace)?;
-    Ok(false)
+    then: impl FnOnce(&mut Editor) + Send + 'static,
+) -> bool {
+    let what = format!(
+        "show {}",
+        interrupt::location(&target.path, Some(target.line))
+    );
+    let moved = interrupt::jump(editor, compositor, interrupt, what, move |editor, _| {
+        jump(editor, &target, Action::Replace)
+            .map_err(|err| RpcError::not_found(format!("bb: {err}")))?;
+        then(editor);
+        Ok(())
+    });
+    match moved {
+        Ok(moved) => moved.is_none(),
+        Err(err) => {
+            // a missing file is reported, not an error
+            editor.set_warning(err.message);
+            false
+        }
+    }
 }
 
 /// Move the focused view to `target` now: open the file, select the place,
@@ -274,14 +273,7 @@ pub fn jump(editor: &mut Editor, target: &JumpTarget, action: Action) -> Result<
     );
     let selection = match target.end_line {
         Some(end_line) if end_line >= target.line => {
-            let end = char_from_pos(
-                text,
-                Position {
-                    line: end_line,
-                    col: usize::MAX,
-                },
-            );
-            Selection::single(start, end.max(start))
+            Selection::single(start, char_after_line(text, end_line).max(start))
         }
         _ => Selection::point(start),
     };
@@ -331,7 +323,7 @@ fn yes() -> bool {
 pub fn set(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     Box::pin(async move {
         let params: SetParams = parse_params(params)?;
-        let interrupt = parse_interrupt(params.interrupt.as_deref())?;
+        let interrupt = Interrupt::parse(params.interrupt.as_deref())?;
         if params.list.is_empty() {
             return Err(RpcError::invalid_params("list", "list must not be empty"));
         }
@@ -376,15 +368,8 @@ pub fn set(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
         if let (Some(index), Some(mut target)) = (params.goto, goto_target) {
             let status = STATE.lock().list(&name).map(|l| l.status(index));
             target.status = status;
-            deferred = on_editor(move |editor, _| {
-                match request_jump(editor, target, interrupt) {
-                    Ok(deferred) => deferred,
-                    Err(err) => {
-                        // a missing file is reported, not an error
-                        editor.set_warning(format!("bb: {err}"));
-                        false
-                    }
-                }
+            deferred = on_editor(move |editor, compositor| {
+                request_jump(editor, compositor, target, interrupt, |_| {})
             })
             .await?;
         }
@@ -714,13 +699,5 @@ mod tests {
         assert_eq!(list.status(0), "tour 1/2: entry point");
         assert_eq!(list.status(1), "tour 2/2: handler");
         assert!(list.has_notes());
-    }
-
-    #[test]
-    fn interrupt_values() {
-        assert_eq!(parse_interrupt(None).unwrap(), Interrupt::WhenIdle);
-        assert_eq!(parse_interrupt(Some("always")).unwrap(), Interrupt::Always);
-        let err = parse_interrupt(Some("never")).unwrap_err();
-        assert_eq!(err.data, Some(json!({ "field": "interrupt" })));
     }
 }

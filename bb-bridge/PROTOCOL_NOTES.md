@@ -310,10 +310,14 @@ should know about.
 
 ## Reveal (step 2d)
 
-- Result: `{ "animated": <ranges with something on screen>, "deferred":
-  false }`. `deferred` is always false until step 2c: `follow` moves the
-  focused view at once (cursor to the start of the first range, centred,
-  opening the file in the focused pane if needed).
+- Result: `{ "animated": <ranges with something on screen>, "deferred" }`.
+  `follow` moves the focused view (cursor to the start of the first range,
+  centred, opening the file in the focused pane if needed) through the "not
+  yanking the user" gate: while the user is busy the move becomes the
+  pending jump (`bb wants to show <path>:<line> (:bb-go)`), the result is
+  `"deferred": true`, and what is on screen now animates without moving
+  (`animated` counts that). `:bb-go` moves there and plays the reveal again,
+  against the text as it is then. Without `follow`, `deferred` is `false`.
 - A file that is not open is `animated: 0` without `follow` (nothing of it is
   on screen) and is opened with `follow`. A path that is neither open nor
   on disk is `not_found`. `durationMs` outside 50..3000 is `invalid_params`
@@ -369,11 +373,14 @@ should know about.
   replaced; the replaced text is still one `u` away.
 - `follow` moves to the first change of the first reloaded buffer, in the
   order Helix lists its buffers, through the same jump as `locations/set`
-  `goto` (jump list entry, centred). Only with `follow` does the result carry
-  `"deferred"` (always `false` until step 2c).
-- `reveal` and `interrupt` are validated (`interrupt` as for `editor/open`).
-  `reveal` has no visible effect until step 2d; the reload keeps the ranges
-  it inserted and the lines it removed for it.
+  `goto` (jump list entry, centred), so it honours `interrupt`. Only with
+  `follow` does the result carry `"deferred"`.
+- `reveal` plays the reveal animation (`editor/reveal`, 600 ms) once per
+  reloaded buffer with the text the reload inserted and the lines it
+  removed, after the `follow` jump, so the followed buffer animates where
+  the view landed. When the follow is deferred, what is on screen animates
+  now and the followed buffer's reveal plays again on `:bb-go`, if the
+  buffer has not changed since the reload (its ranges would not match).
 - **`event/externalChange`** is sent once per change on disk, per buffer:
   the same buffer is announced again only after its file's mtime moves
   again. Both `editor/reload` (for `skippedModified` buffers) and the focus
@@ -393,11 +400,13 @@ should know about.
   `goto` past the end is `invalid_params` with `field: "goto"`.
 - Item paths are resolved when the list is set (relative to
   `workspaceRoot`). An item's `col` places the cursor (default column 1);
-  `endLine` selects from there through the end of that line, as
-  `editor/open` does.
+  `endLine` selects from there through that line, its line ending
+  included, as `editor/open` with `endLine` and no `endCol` does.
 - The result is `{ "count", "deferred" }`; `deferred` is always present.
+  `goto` honours `interrupt` like `editor/open`; a deferred goto is
+  performed by `:bb-go` (the list is set and activated at once either way).
   A `goto` to an item whose file is gone does not move, shows a warning and
-  still succeeds.
+  still succeeds; deferred, the warning comes when `:bb-go` runs.
 - `locations/set` replaces the list of the same name; `"activate": false`
   leaves the active list as it was. `locations/clear` without `list` clears
   every list; it returns `{}`. Lists last for the session.

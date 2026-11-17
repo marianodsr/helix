@@ -474,6 +474,44 @@ async fn reveal_follow_opens_and_moves() -> anyhow::Result<()> {
         .cursor(text);
     assert_eq!(text.char_to_line(cursor), 6);
     assert!(doc.bridge_annotations.reveal.is_some());
+
+    // while the user is busy the move waits for :bb-go, which plays it there
+    let shown = canonical(shown_file.path());
+    let p = shown.clone();
+    bridge
+        .run(|keys, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["mode"]).await?;
+            keys.send("i")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "insert");
+            let r = c
+                .call(
+                    "editor/reveal",
+                    json!({ "path": p, "ranges": [{ "start": pos(1, 1), "end": pos(2, 1) }], "follow": true, "durationMs": 3000 }),
+                )
+                .await?;
+            assert_eq!(r, json!({ "animated": 0, "deferred": true }), "not on screen yet");
+            keys.send("<esc>")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "normal");
+            keys.send(":bb-go<ret>")?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let st = c.call("editor/state", json!({})).await?;
+                if st["focused"]["path"] == p.as_str() {
+                    break;
+                }
+                anyhow::ensure!(std::time::Instant::now() < deadline, ":bb-go did not move");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(())
+        })
+        .await?;
+    let doc = doc!(bridge.app.editor);
+    assert_eq!(
+        doc.path().map(|p| p.to_string_lossy().into_owned()),
+        Some(shown)
+    );
+    assert!(doc.bridge_annotations.reveal.is_some(), "played on arrival");
     bridge.finish().await?;
     Ok(())
 }

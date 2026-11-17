@@ -39,6 +39,7 @@ use tokio::sync::oneshot;
 use super::annotations::blend;
 use crate::bridge::convert::{char_from_pos, resolve_path};
 use crate::bridge::dispatch::on_editor;
+use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{parse_params, Range as ProtoRange, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
@@ -52,7 +53,7 @@ const TICK: Duration = Duration::from_millis(16);
 /// `durationMs` bounds and default.
 const MIN_DURATION: u64 = 50;
 const MAX_DURATION: u64 = 3000;
-const DEFAULT_DURATION: u64 = 600;
+pub const DEFAULT_DURATION: Duration = Duration::from_millis(600);
 /// Removed lines one request may show.
 const MAX_REMOVED: usize = 1000;
 /// Drawn over a grapheme not uncovered yet when the theme's background is
@@ -222,8 +223,8 @@ pub fn play(
     animated
 }
 
-/// Move the focused view to the first change, at once (step 2c adds the
-/// waiting behaviour of `interrupt`).
+/// Move the focused view to the first change, at once (callers go through
+/// `interrupt::jump` first).
 fn follow_first(
     editor: &mut Editor,
     doc: DocumentId,
@@ -484,7 +485,7 @@ pub(super) fn decorate<'d>(
 
 // --- editor/reveal -------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RevealParams {
     path: String,
@@ -497,7 +498,7 @@ struct RevealParams {
     interrupt: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RemovedParams {
     line: usize,
     text: String,
@@ -506,15 +507,10 @@ struct RemovedParams {
 pub fn reveal(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     Box::pin(async move {
         let params: RevealParams = parse_params(params)?;
-        if let Some(interrupt) = &params.interrupt {
-            if interrupt != "whenIdle" && interrupt != "always" {
-                return Err(RpcError::invalid_params(
-                    "interrupt",
-                    "interrupt must be \"whenIdle\" or \"always\"",
-                ));
-            }
-        }
-        let duration = params.duration_ms.unwrap_or(DEFAULT_DURATION);
+        let interrupt = Interrupt::parse(params.interrupt.as_deref())?;
+        let duration = params
+            .duration_ms
+            .unwrap_or(DEFAULT_DURATION.as_millis() as u64);
         if !(MIN_DURATION..=MAX_DURATION).contains(&duration) {
             return Err(RpcError::invalid_params(
                 "durationMs",
@@ -523,17 +519,37 @@ pub fn reveal(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
         }
         let path = resolve_path(&params.path, &cx.shared.info.workspace_root);
         let on_disk = tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file());
-        let animated = on_editor(move |editor, _| {
-            reveal_on_main(
-                editor,
-                &path,
-                on_disk,
-                params,
-                Duration::from_millis(duration),
-            )
+        let duration = Duration::from_millis(duration);
+        let (animated, deferred) = on_editor(move |editor, compositor| {
+            if !params.follow {
+                return reveal_on_main(editor, &path, on_disk, params, duration, false)
+                    .map(|n| (n, false));
+            }
+            if !on_disk && editor.document_id_by_path(&path).is_none() {
+                return Err(RpcError::not_found(format!("{} not found", path.display())));
+            }
+            let line = params
+                .ranges
+                .iter()
+                .map(|r| r.start.line)
+                .chain(params.removed.iter().map(|r| r.line))
+                .min();
+            let what = format!("show {}", interrupt::location(&path, line));
+            let later = (path.clone(), params.clone());
+            let moved = interrupt::jump(editor, compositor, interrupt, what, move |editor, _| {
+                let (path, params) = later;
+                reveal_on_main(editor, &path, on_disk, params, duration, true)
+            })?;
+            match moved {
+                Some(animated) => Ok((animated, false)),
+                // `:bb-go` moves there and plays it again; what is on
+                // screen now animates without moving
+                None => reveal_on_main(editor, &path, on_disk, params, duration, false)
+                    .map(|n| (n, true)),
+            }
         })
         .await??;
-        Ok(json!({ "animated": animated, "deferred": false }))
+        Ok(json!({ "animated": animated, "deferred": deferred }))
     })
 }
 
@@ -543,6 +559,7 @@ fn reveal_on_main(
     on_disk: bool,
     params: RevealParams,
     duration: Duration,
+    follow: bool,
 ) -> Result<usize, RpcError> {
     let doc = match editor.document_id_by_path(path) {
         Some(doc) => doc,
@@ -550,7 +567,7 @@ fn reveal_on_main(
             return Err(RpcError::not_found(format!("{} not found", path.display())))
         }
         // Not open: nothing of it is on screen unless `follow` shows it.
-        None if !params.follow => return Ok(0),
+        None if !follow => return Ok(0),
         None => editor
             .open(path, Action::Replace)
             .map_err(|err| RpcError::not_found(format!("{}: {err}", path.display())))?,
@@ -578,7 +595,7 @@ fn reveal_on_main(
                 .collect::<Vec<_>>()
         })
         .collect();
-    Ok(play(editor, doc, &ranges, removed, duration, params.follow))
+    Ok(play(editor, doc, &ranges, removed, duration, follow))
 }
 
 #[cfg(test)]

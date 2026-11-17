@@ -216,8 +216,10 @@ async fn reload_follow_moves_to_the_first_change() -> anyhow::Result<()> {
     let b = helpers::temp_file_with_contents("x1\nx2\nx3\nx4\nx5\n")?;
     let (ap, bp) = (canonical(a.path()), canonical(b.path()));
     let mut bridge = Bridge::start(AppBuilder::new().with_file(a.path(), None))?;
+    let (ap2, bp2) = (ap.clone(), bp.clone());
     bridge
         .run(move |_, socket| async move {
+            let (ap, bp) = (ap2, bp2);
             let mut c = Client::connect(&socket).await?;
             c.call("editor/open", json!({ "path": bp, "focus": false }))
                 .await?;
@@ -235,6 +237,81 @@ async fn reload_follow_moves_to_the_first_change() -> anyhow::Result<()> {
             // the diff is per character: the first insertion is " changed é"
             assert_eq!(s["focused"]["selections"][0]["start"], pos(4, 3));
             assert_ne!(s["focused"]["path"], ap.as_str());
+            Ok(())
+        })
+        .await?;
+    assert!(
+        helix_view::doc!(bridge.app.editor)
+            .bridge_annotations
+            .reveal
+            .is_some(),
+        "the reload's reveal plays where the view followed"
+    );
+
+    // while the user is busy, follow and goto wait for :bb-go
+    let (ap2, bp2) = (ap.clone(), bp.clone());
+    bridge
+        .run(move |keys, socket| async move {
+            let (ap, bp) = (ap2, bp2);
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["mode"]).await?;
+            c.call("editor/open", json!({ "path": ap, "interrupt": "always" }))
+                .await?;
+            keys.send("i")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "insert");
+            rewrite(&bp, "x1\nx2 again\nx3\nx4 changed é\nx5\n")?;
+            let r = c
+                .call("editor/reload", json!({ "follow": true, "reveal": true }))
+                .await?;
+            assert_eq!(r["reloaded"], json!([bp]));
+            assert_eq!(r["deferred"], true, "{r}");
+            assert_eq!(state(&mut c).await?["focused"]["path"], ap.as_str());
+            keys.send("<esc>")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "normal");
+            keys.send(":bb-go<ret>")?;
+            until(&mut c, "the deferred follow", |s| {
+                s["focused"]["path"] == bp.as_str()
+                    && s["focused"]["selections"][0]["start"] == pos(2, 3)
+            })
+            .await?;
+            Ok(())
+        })
+        .await?;
+    assert!(
+        helix_view::doc!(bridge.app.editor)
+            .bridge_annotations
+            .reveal
+            .is_some(),
+        ":bb-go replays the reveal where it lands"
+    );
+
+    let (ap2, bp2) = (ap.clone(), bp.clone());
+    bridge
+        .run(move |keys, socket| async move {
+            let (ap, bp) = (ap2, bp2);
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["mode"]).await?;
+            keys.send("i")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "insert");
+            let items = json!([{ "path": ap, "line": 1 }]);
+            let r = c
+                .call(
+                    "locations/set",
+                    json!({ "list": "tour", "items": items, "goto": 0 }),
+                )
+                .await?;
+            assert_eq!(r, json!({ "count": 1, "deferred": true }));
+            assert_eq!(state(&mut c).await?["focused"]["path"], bp.as_str());
+            let r = c
+                .call(
+                    "locations/set",
+                    json!({ "list": "tour", "items": items, "goto": 0, "interrupt": "always" }),
+                )
+                .await?;
+            assert_eq!(r["deferred"], false);
+            assert_eq!(state(&mut c).await?["focused"]["path"], ap.as_str());
+            keys.send("<esc>")?;
+            assert_eq!(c.event("event/mode").await?["mode"], "normal");
             Ok(())
         })
         .await?;
@@ -321,8 +398,9 @@ async fn locations_walk_picker_and_notes() -> anyhow::Result<()> {
             assert_eq!(r, json!({ "count": 3, "deferred": false }));
             let s = state(&mut c).await?;
             assert_eq!(s["focused"]["path"], bp2.as_str());
-            // col 2 of line 5 through the end of line 6
-            assert_eq!(s["focused"]["selections"][0], range(5, 2, 6, 3));
+            // col 2 of line 5 through line 6, its line ending included
+            // (as `editor/open` with `endLine` selects)
+            assert_eq!(s["focused"]["selections"][0], range(5, 2, 7, 1));
 
             let err = c
                 .error("locations/set", json!({ "list": "tour", "items": items, "goto": 3 }))
