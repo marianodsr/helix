@@ -17,13 +17,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
+use helix_core::chars::{char_is_line_ending, char_is_whitespace};
 use helix_core::doc_formatter::FormattedGrapheme;
 use helix_core::graphemes::{
     ensure_grapheme_boundary_next, ensure_grapheme_boundary_prev, grapheme_width, Grapheme,
 };
 use helix_core::syntax::Highlight;
 use helix_core::text_annotations::Overlay;
-use helix_core::{chars::char_is_whitespace, Selection, Tendril};
+use helix_core::{RopeSlice, Selection, Tendril};
 use helix_event::{register_hook, runtime_local};
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::annotations::bridge::{RemovedLine, Reveal};
@@ -43,7 +44,7 @@ use crate::bridge::methods::interrupt::{self, Interrupt};
 use crate::bridge::protocol::{parse_params, Range as ProtoRange, RpcError, RpcResult};
 use crate::bridge::server::Ctx;
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
-use crate::ui::document::TextRenderer;
+use crate::ui::document::{LinePos, TextRenderer};
 use crate::ui::text_decorations::{Decoration, DecorationManager};
 
 pub const CAPABILITY: Option<&str> = Some("reveal");
@@ -466,11 +467,110 @@ impl Decoration for Fresh<'_> {
     }
 }
 
+/// Helix draws indent guides and soft-wrap indicators on every visual line,
+/// and they are not part of the text the overlays cover, so on a line still
+/// covered they would show before its text. After each visual line whose
+/// text is all still covered, this blanks the row (a plain space, no style,
+/// so cursor, selection and cursorline backgrounds stay).
+struct Hide<'a> {
+    text: RopeSlice<'a>,
+    /// Sorted by `char_idx`.
+    overlays: &'a [Overlay],
+    /// The lines the overlays are on.
+    range: Range<usize>,
+    row: Option<u16>,
+    covered: bool,
+    shown: bool,
+}
+
+impl Hide<'_> {
+    fn anchor(&self, pos: usize) -> usize {
+        if pos >= self.range.end {
+            usize::MAX
+        } else {
+            pos.max(self.range.start)
+        }
+    }
+}
+
+impl Decoration for Hide<'_> {
+    fn reset_pos(&mut self, pos: usize) -> usize {
+        self.anchor(pos)
+    }
+
+    fn skip_concealed_anchor(&mut self, conceal_end_char_idx: usize) -> usize {
+        self.anchor(conceal_end_char_idx)
+    }
+
+    fn decorate_grapheme(
+        &mut self,
+        _renderer: &mut TextRenderer,
+        grapheme: &FormattedGrapheme,
+    ) -> usize {
+        let row = grapheme.visual_pos.row as u16;
+        if self.row != Some(row) {
+            self.row = Some(row);
+            self.covered = false;
+            self.shown = false;
+        }
+        // A virtual grapheme (a wrap indicator, an inlay hint) carries the
+        // index of the document grapheme after it, which the next call skips:
+        // judge that one now. It is on the same row.
+        let at = grapheme.char_idx;
+        if at < self.text.len_chars() {
+            if self
+                .overlays
+                .binary_search_by_key(&at, |o| o.char_idx)
+                .is_ok()
+            {
+                self.covered = true;
+            } else {
+                let ch = self.text.char(at);
+                self.shown |= !(char_is_whitespace(ch) || char_is_line_ending(ch));
+            }
+        }
+        self.anchor(at + grapheme.doc_chars().max(1))
+    }
+
+    fn render_virt_lines(
+        &mut self,
+        renderer: &mut TextRenderer,
+        pos: LinePos,
+        _virt_off: helix_core::Position,
+    ) -> helix_core::Position {
+        if self.row == Some(pos.visual_line) && self.covered && !self.shown {
+            let viewport = renderer.viewport;
+            let blank = " ".repeat(viewport.width as usize);
+            renderer.set_string(viewport.x, pos.visual_line, &blank, Style::default());
+        }
+        helix_core::Position::new(0, 0)
+    }
+}
+
 pub(super) fn decorate<'d>(
     reveal: &'d Reveal,
+    text: RopeSlice<'d>,
     theme: &Theme,
     decorations: &mut DecorationManager<'d>,
 ) {
+    if let (Some(first), Some(last)) = (reveal.overlays.first(), reveal.overlays.last()) {
+        let len = text.len_chars();
+        let start = text.line_to_char(text.char_to_line(first.char_idx.min(len)));
+        let last_line = text.char_to_line(last.char_idx.min(len));
+        let end = if last_line + 1 < text.len_lines() {
+            text.line_to_char(last_line + 1)
+        } else {
+            len
+        };
+        decorations.add_decoration(Hide {
+            text,
+            overlays: &reveal.overlays,
+            range: start..end,
+            row: None,
+            covered: false,
+            shown: false,
+        });
+    }
     if reveal.fresh.is_empty() {
         return;
     }

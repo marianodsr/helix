@@ -300,9 +300,14 @@ should know about.
   endings included, is removed; emptying a line keeps it. Undo does not
   bring a removed annotation back; the client sets it again, as a language
   server does with diagnostics.
-- **Last line without a final newline**: Helix reserves no virtual lines
-  after it, so the text is drawn in the empty area below the end of the
-  file, and is cut off when that line is at the bottom of the view.
+- **Last line of the document** (a file without a final newline, or a line
+  past the end clamped to it): Helix lays out no virtual lines after it, so
+  the text is drawn in the empty area below the end of the file. While the
+  cursor is on that line (after each command, and after `annotations/set`),
+  the view scrolls just enough for those rows to fit, never moving the
+  cursor line out of view; the rows of any other line come into view as the
+  cursor moves down past them. With the cursor elsewhere it can still be
+  below the bottom of the view, like any line's rows.
 - `annotations/clear` answers `{}`. Without `path` it clears the namespace in
   every open document and every file waiting to be opened.
 - `:bb-annotations` hides and shows every bridge annotation in the process;
@@ -334,8 +339,10 @@ should know about.
 - Covered graphemes are drawn in the theme's background colour, so wrapping
   and positions never move. With a non-RGB background, single-width
   graphemes are drawn as a Braille blank (U+2800) instead and wide ones show
-  at once. Whitespace is never covered; soft-wrap indicators and indent
-  guides of covered lines show from the start.
+  at once. Whitespace is never covered. A visual line whose text is all
+  still covered is drawn blank, so its indent guides, soft-wrap indicator
+  and any inlay hints do not show before its text; the cursor, selection
+  and cursorline backgrounds stay.
 - `removed`: `line` is the line of the current text the removed text was
   above; the rows show under the line before it (under line 1 when
   `line` is 1). Text with newlines is several rows. Rows are not wrapped
