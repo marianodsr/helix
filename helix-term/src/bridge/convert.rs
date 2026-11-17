@@ -40,7 +40,7 @@ pub fn char_from_pos(text: RopeSlice, pos: Position) -> usize {
     }
     let start = text.line_to_char(line);
     let end = line_end_char_index(&text, line);
-    (start + pos.col.max(1) - 1).min(end)
+    start.saturating_add(pos.col.max(1) - 1).min(end)
 }
 
 /// True when Helix would draw this range as a plain cursor.
@@ -231,6 +231,8 @@ mod tests {
         // col past the end of line 1 clamps before "\r\n"
         assert_eq!(char_from_pos(s, p(1, 99)), 2);
         assert_eq!(char_from_pos(s, p(2, 2)), 5);
+        // "to the end of the line" is usize::MAX; it must not overflow
+        assert_eq!(char_from_pos(s, p(2, usize::MAX)), 6);
     }
 
     #[test]
