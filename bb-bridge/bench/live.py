@@ -2,6 +2,7 @@
 """Drive a real `hx` under a pty, over its bridge socket.
 
     live.py verify  [--hx PATH] [--overflow-seconds 70]
+    live.py files   [--hx PATH]                   # only the :bb-files checks
     live.py bench   [--hx PATH]
     live.py compat  [--hx PATH] [--config DIR]   # DIR contains helix/config.toml
     live.py lspbench [--hx PATH] [-n 50]          # step 2b, needs ~/go/bin/gopls
@@ -103,6 +104,10 @@ class Hx:
             data = bytes(self.out[mark:])
         text = data.decode("utf-8", "replace")
         return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[=>]", "", text)
+
+    def text_since_raw(self, mark=0):
+        with self.lock:
+            return bytes(self.out[mark:]).decode("utf-8", "replace")
 
     def wait_text(self, needle, mark=0, timeout=5.0):
         # Helix only redraws cells that changed, so a space already on screen
@@ -446,6 +451,7 @@ def verify(args):
             sb.cleanup()
     _verify_2c(args, check)
     verify_annotations_reveal(args, check)
+    verify_files(args, check)
     # --- step 2b: diagnostics and lsp (bb-bridge/bench/live_lsp.py) ---
     live_lsp.verify(args, Sandbox, check)
     # --- end step 2b ---
@@ -825,6 +831,180 @@ def _verify_2c(args, check):
             sb.cleanup()
 
 
+# --- :bb-files: the file manager as a chooser, with no client ---------------------
+
+FILES_STUB = r"""#!/bin/sh
+# A stand-in for yazi: logs how it was started and the terminal it got,
+# reads one line from the terminal, then writes what $SB/mode says.
+chooser="$1"; start="$2"; sb="$(dirname "$0")"
+log="$sb/stub.log"
+echo "args: $chooser | $start" > "$log"
+[ -t 0 ] && echo "stdin: tty" >> "$log"
+[ -t 1 ] && echo "stdout: tty" >> "$log"
+echo "stty: $(stty -a 2>&1 | tr '\n' ' ')" >> "$log"
+printf 'STUB-SCREEN-UP\n'
+IFS= read -r line
+echo "read: $line" >> "$log"
+case "$(cat "$sb/mode")" in
+  one) printf '%s\n' "$sb/repo/notes.md" > "$chooser" ;;
+  two) printf '%s\n%s\n' "$sb/repo/src/lib.rs" "$sb/repo/notes.md" > "$chooser" ;;
+  none) ;;
+esac
+echo done >> "$log"
+"""
+
+FILES_BINDINGS = """
+[keys.normal.space]
+e = ":bb-files"
+
+[keys.select.space]
+e = ":bb-files"
+"""
+
+
+def verify_files(args, check):
+    sb = Sandbox(bindings=False)
+    try:
+        stub = os.path.join(sb.root, "fm.sh")
+        with open(stub, "w") as f:
+            f.write(FILES_STUB)
+        os.chmod(stub, 0o755)
+        with open(os.path.join(sb.config_home, "helix", "config.toml"), "w") as f:
+            f.write(f'[editor.bridge]\nfile-manager = ["{stub}", "{{chooser}}", "{{path}}"]\n' + FILES_BINDINGS)
+        hx = sb.start(args.hx)
+        try:
+            _verify_files(sb, hx, check)
+        finally:
+            hx.kill()
+    finally:
+        if not args.keep:
+            sb.cleanup()
+    # a program that is not there: an error on the status line, Helix goes on
+    sb = Sandbox(bindings=False)
+    try:
+        with open(os.path.join(sb.config_home, "helix", "config.toml"), "w") as f:
+            f.write('[editor.bridge]\nfile-manager = ["helix-bb-missing-fm", "{chooser}"]\n' + FILES_BINDINGS)
+        hx = sb.start(args.hx)
+        try:
+            reg = sb.registry(hx.pid)
+            c = Client(reg["socket"])
+            c.call("bridge/hello", {"client": "live-files"})
+            time.sleep(0.3)
+            m = hx.mark()
+            hx.send(" e", pause=0.3)
+            check(hx.wait_text("helix-bb-missing-fm not found", m), "files: missing program is a status-line error")
+            check("\x1b[?1049l" not in hx.text_since_raw(m), "files: missing program leaves the screen alone")
+            hx.send("i", pause=0.2)
+            check(c.call("editor/state", {})["mode"] == "insert", "files: Helix takes keys after the error")
+            hx.esc()
+        finally:
+            hx.kill()
+    finally:
+        if not args.keep:
+            sb.cleanup()
+
+
+def verify_files_only(args):
+    check = Checks()
+    verify_files(args, check)
+    print(f"\n{check.passed} passed, {check.failed} failed")
+    return 1 if check.failed else 0
+
+
+def _last(raw, on, off):
+    """Whether the last of two escape sequences in `raw` is `on`."""
+    return raw.rfind(on) > raw.rfind(off)
+
+
+def _verify_files(sb, hx, check):
+    reg = sb.registry(hx.pid)
+    if not check(reg is not None, "files: registry file written"):
+        return
+    c = Client(reg["socket"])
+    c.call("bridge/hello", {"client": "live-files"})
+    main_go, notes, lib_rs = sb.path("main.go"), sb.path("notes.md"), sb.path("src/lib.rs")
+    real = os.path.realpath
+    log = os.path.join(sb.root, "stub.log")
+    mode = os.path.join(sb.root, "mode")
+    time.sleep(0.4)
+
+    def run(keys, which):
+        with open(mode, "w") as f:
+            f.write(which)
+        if os.path.exists(log):
+            os.remove(log)
+        m = hx.mark()
+        hx.send(keys, pause=0.1)
+        up = hx.wait_text("STUB-SCREEN-UP", m, timeout=5)
+        # typed while the file manager runs: it must get the line, not Helix
+        hx.send("picked\r", pause=0.1)
+        _wait(lambda: os.path.exists(log) and "done" in open(log).read())
+        time.sleep(0.4)
+        return m, up, open(log).read() if os.path.exists(log) else ""
+
+    before = c.call("editor/state", {})
+    m, up, text = run(" e", "one")
+    check(up, "files: space e runs the file manager full screen")
+    check("stdin: tty" in text and "stdout: tty" in text, "files: the program is attached to the terminal", text)
+    check(" icanon" in text and " echo" in text, "files: the terminal is in cooked mode for it", text)
+    check("read: picked" in text, "files: keys typed go to the program, not to Helix", text)
+    args_line = next((l for l in text.splitlines() if l.startswith("args: ")), "")
+    chooser, _, start = args_line[len("args: "):].partition(" | ")
+    check(real(start) == main_go, "files: {path} is the focused file", args_line)
+    check(chooser != "" and not os.path.exists(chooser), "files: the chooser file is removed", chooser)
+    raw = hx.text_since_raw(m)
+    left, came_back = raw.find("\x1b[?1049l"), raw.rfind("\x1b[?1049h")
+    stub_at = raw.find("STUB-SCREEN-UP")
+    check(0 <= left < stub_at < came_back, "files: main screen while it runs, alternate screen after",
+          (left, stub_at, came_back))
+    check(raw.find("\x1b[?1006l") < stub_at and _last(raw, "\x1b[?1006h", "\x1b[?1006l"),
+          "files: mouse capture off while it runs, on after")
+    check(_last(raw, "\x1b[?2004h", "\x1b[?2004l"), "files: bracketed paste back on")
+    st = c.call("editor/state", {})
+    check(real(st["focused"]["path"]) == notes, "files: the chosen file is open and focused", st["focused"]["path"])
+    check(hx.wait_text("notes.md", m), "files: the editor is drawn again")
+    hx.send("i", pause=0.2)
+    check(c.call("editor/state", {})["mode"] == "insert", "files: Helix takes keys again afterwards")
+    hx.esc()
+
+    docs = len(c.call("editor/state", {})["documents"])
+    m, up, text = run("v e", "two")
+    st = c.call("editor/state", {})
+    paths = [real(d["path"]) for d in st["documents"]]
+    check(up and {lib_rs, notes} <= set(paths) and len(paths) == len(set(paths)),
+          "files: two chosen files open (select mode), no duplicate buffer", paths)
+    check(real(st["focused"]["path"]) == lib_rs, "files: the first chosen file is focused", st["focused"]["path"])
+    hx.esc()
+
+    focused = st["focused"]["path"]
+    docs = len(st["documents"])
+    m, up, text = run(" e", "none")
+    st = c.call("editor/state", {})
+    check(up and st["focused"]["path"] == focused and len(st["documents"]) == docs,
+          "files: nothing chosen changes nothing")
+    raw = hx.text_since_raw(m)
+    check(_last(raw, "\x1b[?1049h", "\x1b[?1049l") and _last(raw, "\x1b[?1006h", "\x1b[?1006l"),
+          "files: the screen is back after a cancel")
+    check(before["focused"]["path"] == main_go, "files: started on main.go")
+
+    # with bb listening, only the event
+    c2 = Client(reg["socket"])
+    c2.call("events/subscribe", {"events": ["files"]})
+    with open(mode, "w") as f:
+        f.write("one")
+    if os.path.exists(log):
+        os.remove(log)
+    m = hx.mark()
+    hx.send(" e", pause=0.3)
+    try:
+        ev = c2.event("event/files", timeout=3)
+    except Exception as err:  # noqa: BLE001
+        ev = {"error": str(err)}
+    time.sleep(0.5)
+    check(ev.get("path") == focused, "files: with a client subscribed, event/files with the focused file", ev)
+    check(not os.path.exists(log), "files: with a client subscribed the program does not run")
+
+
 # --- step 2d: annotations and reveal --------------------------------------------
 
 
@@ -1145,7 +1325,7 @@ def snapshot(directory):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["verify", "bench", "compat", "lspbench", "lspbig", "redraw"])
+    ap.add_argument("mode", choices=["verify", "files", "bench", "compat", "lspbench", "lspbig", "redraw"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
@@ -1160,7 +1340,7 @@ def main():
     ap.add_argument("--before", help="redraw: the binary to compare against")
     ap.add_argument("--settle", type=float, default=0, help="lspbig: wait up to this long for gopls to go idle")
     args = ap.parse_args()
-    modes = {"verify": verify, "bench": bench, "compat": compat,
+    modes = {"verify": verify, "files": verify_files_only, "bench": bench, "compat": compat,
              "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),
              "redraw": lambda a: redraw.bench(a, Sandbox)}
     sys.exit(modes[args.mode](args))

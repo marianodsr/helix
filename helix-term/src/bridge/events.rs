@@ -47,10 +47,11 @@ pub enum Kind {
     Send,
     Lsp,
     ExternalChange,
+    Files,
 }
 
 impl Kind {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     pub const ALL: [Kind; Self::COUNT] = [
         Kind::Selection,
         Kind::Documents,
@@ -59,6 +60,7 @@ impl Kind {
         Kind::Send,
         Kind::Lsp,
         Kind::ExternalChange,
+        Kind::Files,
     ];
 
     pub const fn bit(self) -> u32 {
@@ -74,6 +76,7 @@ impl Kind {
             Kind::Send => "send",
             Kind::Lsp => "lsp",
             Kind::ExternalChange => "externalChange",
+            Kind::Files => "files",
         }
     }
 

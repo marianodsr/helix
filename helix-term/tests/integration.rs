@@ -25,6 +25,8 @@ mod test {
     #[cfg(unix)]
     mod bridge_command;
     #[cfg(unix)]
+    mod bridge_files;
+    #[cfg(unix)]
     mod bridge_lsp;
     mod command_line;
     mod commands;

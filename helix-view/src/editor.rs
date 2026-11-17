@@ -2663,6 +2663,9 @@ pub struct BridgeConfig {
     pub commands: BridgeCommandPolicy,
     /// Animate text an agent just wrote (`editor/reveal`). Defaults to `true`.
     pub reveal: bool,
+    /// What `:bb-files` runs when no client shows a tree: `{chooser}` is the
+    /// file it writes the chosen paths to, `{path}` the focused file.
+    pub file_manager: Vec<String>,
 }
 
 impl Default for BridgeConfig {
@@ -2671,6 +2674,9 @@ impl Default for BridgeConfig {
             enable: true,
             commands: BridgeCommandPolicy::Safe,
             reveal: true,
+            file_manager: ["yazi", "--chooser-file", "{chooser}", "{path}"]
+                .map(String::from)
+                .to_vec(),
         }
     }
 }

@@ -21,6 +21,7 @@ use parking_lot::Mutex;
 use tokio::task::AbortHandle;
 
 pub use methods::annotations::decorate;
+pub use methods::files::{hand_over_terminal, pausable_input};
 pub use methods::typable_commands;
 
 runtime_local! {

@@ -261,6 +261,11 @@ impl Application {
     }
 
     async fn render(&mut self) {
+        crate::bridge::hand_over_terminal(
+            &mut self.terminal,
+            &mut self.editor,
+            &mut self.compositor,
+        );
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -1289,13 +1294,15 @@ impl Application {
     pub fn event_stream(&self) -> impl Stream<Item = std::io::Result<TerminalEvent>> + Unpin {
         use termina::{escape::csi, Terminal as _};
         let reader = self.terminal.backend().terminal().event_reader();
-        termina::EventStream::new(reader, |event| {
-            // Accept either non-escape sequences or theme mode updates.
-            !event.is_escape()
-                || matches!(
-                    event,
-                    termina::Event::Csi(csi::Csi::Mode(csi::Mode::ReportTheme(_)))
-                )
+        crate::bridge::pausable_input(move || {
+            termina::EventStream::new(reader.clone(), |event| {
+                // Accept either non-escape sequences or theme mode updates.
+                !event.is_escape()
+                    || matches!(
+                        event,
+                        termina::Event::Csi(csi::Csi::Mode(csi::Mode::ReportTheme(_)))
+                    )
+            })
         })
     }
 
