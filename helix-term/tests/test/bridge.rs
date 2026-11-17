@@ -47,6 +47,12 @@ impl Keys {
         }
         Ok(())
     }
+
+    /// Send a terminal event other than a key press (focus, resize).
+    pub fn event(&self, event: Event) -> anyhow::Result<()> {
+        self.0.send(Ok(event))?;
+        Ok(())
+    }
 }
 
 /// A short directory: socket paths are limited to about 100 bytes.
@@ -289,7 +295,10 @@ async fn lifecycle_registry_and_hello() -> anyhow::Result<()> {
         .await?;
     assert_eq!(hello["protocol"], 1);
     assert_eq!(hello["pid"], std::process::id());
-    assert_eq!(hello["capabilities"], json!(["editor"]));
+    assert!(hello["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("editor")));
     assert_eq!(hello["commandPolicy"], "safe");
     assert!(hello["helixVersion"].as_str().unwrap().contains('.'));
     assert!(hello["workspaceRoot"].as_str().is_some());
@@ -554,9 +563,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
 
             assert_eq!(c.error("no/such", json!({})).await?["code"], -32601);
             for stub in [
-                "editor/reload",
-                "locations/set",
-                "editor/applyEdits",
                 "diagnostics/get",
                 "lsp/query",
                 "view/list",

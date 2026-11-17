@@ -18,6 +18,8 @@ mod test {
     mod auto_pairs;
     #[cfg(unix)]
     mod bridge;
+    #[cfg(unix)]
+    mod bridge_buffers;
     mod command_line;
     mod commands;
     #[cfg(unix)]
