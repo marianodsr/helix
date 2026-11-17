@@ -16,6 +16,8 @@ mod test {
     }
 
     mod auto_pairs;
+    #[cfg(unix)]
+    mod bridge;
     mod command_line;
     mod commands;
     mod movement;

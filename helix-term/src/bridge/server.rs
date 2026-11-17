@@ -6,6 +6,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -57,7 +58,7 @@ pub async fn listen(dir: PathBuf, shared: Arc<Shared>) {
             Ok((stream, _)) => stream,
             Err(err) => {
                 log::warn!("bridge: accept failed: {err}");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
@@ -248,13 +249,24 @@ async fn serve(stream: UnixStream, client: Arc<Client>, shared: Arc<Shared>) {
         _ = read_loop(read, &ctx) => {}
         _ = client.closing.notified() => {}
     }
+    // Closed already: dropped for not reading, or the writer failed.
+    let forced = client.is_closed();
     client.close();
     client.set_subscriptions(&shared, |_| 0);
     for (_, cancel) in client.in_flight.lock().drain() {
         let _ = cancel.send(());
     }
     shared.clients.lock().retain(|c| c.id != client.id);
-    let _ = writer.await;
+    // After a clean EOF, give queued answers a moment to go out; a client
+    // that is not reading would keep the writer blocked forever.
+    let mut writer = writer;
+    if forced
+        || tokio::time::timeout(Duration::from_secs(1), &mut writer)
+            .await
+            .is_err()
+    {
+        writer.abort();
+    }
 }
 
 async fn write_loop(mut write: OwnedWriteHalf, client: Arc<Client>) {

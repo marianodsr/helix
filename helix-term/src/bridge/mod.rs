@@ -98,8 +98,10 @@ impl Shared {
 /// after the editor exists; binding the socket happens in a background task.
 pub fn start(editor: &Editor) {
     let begin = Instant::now();
-    if !editor.config().bridge.enable || std::env::var_os("HELIX_BRIDGE").is_some_and(|v| v == "0")
-    {
+    if !enabled(
+        editor.config().bridge.enable,
+        std::env::var_os("HELIX_BRIDGE"),
+    ) {
         return;
     }
     let Some(dir) = bridge_dir() else {
@@ -128,6 +130,11 @@ pub fn start(editor: &Editor) {
     let task = tokio::spawn(server::listen(dir, shared.clone()));
     shared.track(task.abort_handle());
     log::info!("bridge: started in {:?}", begin.elapsed());
+}
+
+/// `[editor.bridge] enable`, overridden off by `HELIX_BRIDGE=0`.
+fn enabled(config: bool, env: Option<std::ffi::OsString>) -> bool {
+    config && env.is_none_or(|v| v != "0")
 }
 
 /// Remove the socket and registry file and drop every client. Called from
@@ -169,4 +176,37 @@ pub fn set_test_dir(dir: PathBuf) {
 /// The socket of this runtime's bridge, if it started.
 pub fn socket_path() -> Option<PathBuf> {
     BRIDGE.get().map(|s| s.info.socket.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enabled;
+    use helix_view::editor::{BridgeCommandPolicy, Config};
+
+    #[test]
+    fn env_switch() {
+        assert!(enabled(true, None));
+        assert!(enabled(true, Some("1".into())));
+        assert!(!enabled(true, Some("0".into())));
+        assert!(!enabled(false, None));
+        assert!(!enabled(false, Some("1".into())));
+    }
+
+    #[test]
+    fn config_section() {
+        let config = Config::default();
+        assert!(config.bridge.enable);
+        assert_eq!(config.bridge.commands, BridgeCommandPolicy::Safe);
+
+        let config: Config =
+            toml::from_str("[bridge]\nenable = false\ncommands = \"all\"\n").unwrap();
+        assert!(!config.bridge.enable);
+        assert_eq!(config.bridge.commands, BridgeCommandPolicy::All);
+        let config: Config = toml::from_str("[bridge]\ncommands = \"none\"\n").unwrap();
+        assert!(config.bridge.enable);
+        assert_eq!(config.bridge.commands, BridgeCommandPolicy::None);
+
+        assert!(toml::from_str::<Config>("[bridge]\ncommands = \"some\"\n").is_err());
+        assert!(toml::from_str::<Config>("[bridge]\nport = 3\n").is_err());
+    }
 }
