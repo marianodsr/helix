@@ -7,7 +7,10 @@
 //!   file copied there with the lines between
 //!   the `bridge:begin` / `bridge:end` markers removed);
 //! - `NoClient`: the bridge listening, nobody connected;
-//! - `Subscribed`: one client subscribed to every event kind, reading all.
+//! - `Subscribed`: one client subscribed to every event kind, reading all;
+//! - `Diagnostics` / `Annotations` (step 2d): 500 warnings shown at the end
+//!   of their lines, or 500 bridge annotations under them, every 8 lines
+//!   over the first 4000 (where the key sequence moves), bridge listening.
 //!
 //! Run with `bb-bridge/bench/keypress.sh`; it is an ignored test.
 
@@ -76,8 +79,63 @@ enum Variant {
     // bridge:begin
     NoClient,
     Subscribed,
+    Diagnostics,
+    Annotations,
     // bridge:end
 }
+
+// bridge:begin
+/// Step 2d rows: the same number of diagnostics or annotations.
+fn mark_lines(app: &mut Application, variant: Variant) {
+    use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, Severity};
+    use helix_view::annotations::bridge::{Item, Kind};
+    let message = "this line has something to say about the code it marks";
+    let doc = helix_view::doc_mut!(app.editor);
+    let text = doc.text().slice(..);
+    let lines = (2..4000).step_by(8);
+    match variant {
+        Variant::Diagnostics => {
+            let provider = DiagnosticProvider::Lsp {
+                server_id: Default::default(),
+                identifier: None,
+            };
+            let diagnostics: Vec<_> = lines
+                .map(|line| {
+                    let start = text.line_to_char(line) + 1;
+                    Diagnostic {
+                        range: helix_core::diagnostic::Range {
+                            start,
+                            end: start + 4,
+                        },
+                        ends_at_word: false,
+                        starts_at_word: false,
+                        zero_width: false,
+                        line,
+                        message: message.into(),
+                        severity: Some(Severity::Warning),
+                        code: None,
+                        provider: provider.clone(),
+                        tags: Vec::new(),
+                        source: None,
+                        data: None,
+                    }
+                })
+                .collect();
+            doc.replace_diagnostics(diagnostics, &[], Some(&provider));
+        }
+        Variant::Annotations => {
+            let items = lines
+                .map(|line| {
+                    let body = message.to_owned();
+                    Item::new(text, line, line, body, Kind::Comment, None, None, false)
+                })
+                .collect();
+            doc.bridge_annotations.set("bench", items);
+        }
+        _ => {}
+    }
+}
+// bridge:end
 
 /// Build an app on its own runtime, replay `keys` `passes` times, return
 /// the time taken and the number of key presses.
@@ -90,6 +148,14 @@ fn run(variant: Variant, file: &std::path::Path, keys: &str, passes: usize) -> (
     rt.block_on(async move {
         let mut config = test_config();
         config.editor.idle_timeout = Duration::from_millis(10);
+        // bridge:begin
+        if variant == Variant::Diagnostics {
+            config.editor.end_of_line_diagnostics =
+                helix_view::annotations::diagnostics::DiagnosticFilter::Enable(
+                    helix_core::diagnostic::Severity::Hint,
+                );
+        }
+        // bridge:end
         // bridge:begin
         let dir = tempfile::Builder::new()
             .prefix("hxk")
@@ -106,6 +172,9 @@ fn run(variant: Variant, file: &std::path::Path, keys: &str, passes: usize) -> (
             .unwrap();
         let (tx, rx) = unbounded_channel();
         let mut stream = UnboundedReceiverStream::new(rx);
+        // bridge:begin
+        mark_lines(&mut app, variant);
+        // bridge:end
 
         // bridge:begin
         let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -183,6 +252,8 @@ fn keypress_bench() {
         // bridge:begin
         Variant::NoClient,
         Variant::Subscribed,
+        Variant::Diagnostics,
+        Variant::Annotations,
         // bridge:end
     ];
     let sequences = [

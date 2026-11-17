@@ -234,14 +234,15 @@ fn set_on_main(
     }
     let mut pending = PENDING.lock();
     let files = pending.get_or_insert_with(HashMap::new);
-    let file = files.entry(path.to_path_buf()).or_default();
+    let path = helix_stdx::path::canonicalize(path);
+    let file = files.entry(path.clone()).or_default();
     file.retain(|(ns, _)| *ns != params.namespace);
     let count = params.items.len();
     if count > 0 {
         file.push((params.namespace, params.items));
     }
     if file.is_empty() {
-        files.remove(path);
+        files.remove(&path);
     }
     Ok(count)
 }
@@ -249,10 +250,9 @@ fn set_on_main(
 pub fn clear(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
     Box::pin(async move {
         let params: ClearParams = parse_params(params)?;
-        let path = params
-            .path
-            .as_deref()
-            .map(|p| resolve_path(p, &cx.shared.info.workspace_root));
+        let path = params.path.as_deref().map(|p| {
+            helix_stdx::path::canonicalize(resolve_path(p, &cx.shared.info.workspace_root))
+        });
         on_editor(move |editor, _| {
             let ns = params.namespace;
             if let Some(files) = PENDING.lock().as_mut() {

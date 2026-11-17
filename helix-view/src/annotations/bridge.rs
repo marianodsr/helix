@@ -215,7 +215,11 @@ impl BridgeAnnotations {
             // Keep the positions on line boundaries for the next edit.
             item.start = text.line_to_char(item.first_line);
             item.eol = line_ending::line_end_char_index(&text, item.last_line);
-            item.next = item.next.max(item.eol);
+            item.next = if item.last_line + 1 < text.len_lines() {
+                text.line_to_char(item.last_line + 1)
+            } else {
+                len
+            };
             true
         });
         self.sort();

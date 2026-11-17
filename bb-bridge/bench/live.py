@@ -232,6 +232,7 @@ def verify(args):
         hx.kill()
         if not args.keep:
             sb.cleanup()
+    verify_annotations_reveal(args, check)
     print(f"\n{check.passed} passed, {check.failed} failed")
     return 1 if check.failed else 0
 
@@ -252,7 +253,7 @@ def _verify(args, sb, hx, check):
     b = Client(reg["socket"])
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
-    check(hello["capabilities"] == ["editor"] and hello["commandPolicy"] == "safe", "hello", hello)
+    check("editor" in hello["capabilities"] and hello["commandPolicy"] == "safe", "hello", hello)
 
     st = a.call("editor/state")
     check(st["focused"]["path"] == main_go and st["focused"]["languageId"] == "go", "state: focused main.go", st["focused"])
@@ -455,6 +456,118 @@ def _verify(args, sb, hx, check):
         finally:
             h2.kill()
             sb2.cleanup()
+
+
+# --- step 2d: annotations and reveal --------------------------------------------
+
+
+def verify_annotations_reveal(args, check):
+    sb = Sandbox()
+    hx = sb.start(args.hx)
+    try:
+        _verify_annotations_reveal(sb, hx, check)
+    finally:
+        hx.kill()
+        if not args.keep:
+            sb.cleanup()
+
+
+def _verify_annotations_reveal(sb, hx, check):
+    main_go = sb.path("main.go")
+    reg = sb.registry(hx.pid)
+    if not check(reg is not None, "2d: registry file written"):
+        return
+    c = Client(reg["socket"])
+    hello = c.call("bridge/hello", {"client": "live-2d"})
+    check({"annotations", "reveal"} <= set(hello["capabilities"]), "2d: capabilities", hello["capabilities"])
+
+    m = hx.mark()
+    r = c.call("annotations/set", {"namespace": "review", "path": main_go, "items": [
+        {"line": 6, "endLine": 8, "text": "LIVE-COMMENT wrap this error"},
+        {"line": 6, "endLine": 8, "kind": "reply", "text": "LIVE-REPLY done"},
+    ]})
+    check(r["count"] == 2, "2d: annotations/set count", r)
+    check(hx.wait_text("LIVE-COMMENT wrap this error", m) and hx.wait_text("LIVE-REPLY done", m), "2d: annotation text on screen")
+
+    # never part of the document: not in its text, its selection or the saved file
+    t = c.call("editor/text", {"path": main_go})
+    check("LIVE-COMMENT" not in t["text"], "2d: not in editor/text")
+    hx.send("%")
+    sel = c.call("editor/selection")
+    check("LIVE-COMMENT" not in sel["ranges"][0]["text"], "2d: not in a whole-buffer selection")
+    hx.send(";ggOabove" + ESC, pause=0.15)
+    hx.send(":w" + ENTER, pause=0.3)
+    with open(main_go) as f:
+        check("LIVE-COMMENT" not in f.read(), "2d: not saved")
+    c.call("editor/open", {"path": main_go, "line": 9})
+    sel = c.call("editor/selection")
+    with open(main_go) as f:
+        ninth = f.read().split("\n")[8]
+    check(sel["ranges"][0]["text"] == ninth, "2d: line numbers unaffected by virtual lines", (sel["ranges"], ninth))
+
+    # Helix redraws only changed cells: clear the status line with characters
+    # the expected message does not share
+    c.call("editor/status", {"message": "~" * 40})
+    m = hx.mark()
+    hx.send(":bb-annotations" + ENTER)
+    # ("bb annotations" shares cells with the typed command line)
+    check(hx.wait_text("hidden", m), "2d: :bb-annotations hides")
+    m = hx.mark()
+    hx.send(":bb-annotations" + ENTER)
+    check(hx.wait_text("LIVE-COMMENT", m), "2d: :bb-annotations shows them again")
+
+    # 500 annotations over the big file: requests and moves stay fast
+    items = [{"line": 3 + 25 * i, "text": f"note {i}: something to say about this line"} for i in range(500)]
+    t0 = time.perf_counter()
+    c.call("annotations/set", {"namespace": "bulk", "path": main_go, "items": items})
+    set_ms = (time.perf_counter() - t0) * 1000
+    c.call("events/subscribe", {"events": ["selection"]})
+    c.drain(0.2)
+    lat = []
+    for i in range(30):
+        t = time.perf_counter()
+        hx.send("\x04" if i % 2 == 0 else "\x15", pause=0)  # ctrl-d / ctrl-u: half-page scrolls
+        c.event("event/selection")
+        lat.append((time.perf_counter() - t) * 1000)
+        time.sleep(0.08)
+    lat.sort()
+    print(f"INFO 2d: annotations/set of 500 items {set_ms:.1f}ms; key -> event/selection while scrolling over them: "
+          f"p50={lat[len(lat)//2]:.2f}ms max={lat[-1]:.2f}ms")
+    check(lat[len(lat) // 2] < 10, "2d: scrolling over 500 annotations stays fast (p50 < 10 ms)")
+    c.call("annotations/clear", {"namespace": "bulk"})
+
+    # reveal: removed line shows, any key ends it, keys are not delayed
+    hx.send("gg")
+    m = hx.mark()
+    r = c.call("editor/reveal", {
+        "path": main_go,
+        "ranges": [{"start": pos(5, 1), "end": pos(12, 1)}],
+        "removed": [{"line": 6, "text": "LIVE-REMOVED old line"}],
+        "durationMs": 3000,
+    })
+    check(r == {"animated": 1, "deferred": False}, "2d: editor/reveal result", r)
+    check(hx.wait_text("LIVE-REMOVED old line", m), "2d: removed line on screen")
+    c.drain(0.2)
+    lat = []
+    for i in range(10):
+        c.call("editor/reveal", {"path": main_go, "ranges": [{"start": pos(5, 1), "end": pos(20, 1)}], "durationMs": 3000})
+        time.sleep(0.2)
+        t = time.perf_counter()
+        hx.send("k" if i % 2 else "j", pause=0)
+        c.event("event/selection")
+        lat.append((time.perf_counter() - t) * 1000)
+        time.sleep(0.05)
+    lat.sort()
+    print(f"INFO 2d: key -> event/selection during a reveal: p50={lat[len(lat)//2]:.2f}ms max={lat[-1]:.2f}ms")
+    check(lat[len(lat) // 2] < 10, "2d: a key during an animation is not delayed (p50 < 10 ms)")
+    try:
+        c.call("editor/reveal", {"path": main_go, "ranges": [], "durationMs": 5})
+        check(False, "2d: durationMs out of range fails")
+    except RpcError as e:
+        check(e.code == -32602, "2d: durationMs out of range: invalid_params")
+    hx.esc()
+    hx.send(":qa!" + ENTER)
+    check(hx.wait_exit(), "2d: hx exits")
 
 
 def bench(args):
