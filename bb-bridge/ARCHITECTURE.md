@@ -102,10 +102,16 @@ The fork must stay cheap to rebase, and must not make the editor slower.
    are O(1); slice to `String` off the main thread.
 5. **Never block the editor on a client.** Outbound queues are bounded
    (PROTOCOL.md). A dead or slow client is dropped, not waited for.
-6. **No file watcher.** Watching a huge monorepo is expensive and
-   unreliable. Reload is driven from outside (`editor/reload`, sent by the
-   plugin when bb reports file changes) plus a cheap mtime check of open
-   buffers when the terminal regains focus.
+6. **Helix watches the files it has open, and nothing else.** When a file
+   that is open in a buffer changes on disk, whoever changed it (an agent,
+   git, a formatter, another editor), Helix notices by itself, reloads the
+   buffer if it has no unsaved changes, and shows what changed with the
+   reveal animation. No client has to tell it, and no agent tool is
+   involved: the agent writes files the way it always does. The watch covers
+   only open buffers (never the tree: watching a huge monorepo is expensive
+   and unreliable), costs nothing on the key path, and causes no wake-ups
+   while nothing changes. `editor/reload` stays for clients that want to
+   force it, and the mtime check on terminal focus stays as a safety net.
 7. **Never lose the user's work.** Reload skips buffers with unsaved
    changes and reports them. `applyEdits` is one undoable transaction and
    honours `version`.
@@ -149,6 +155,8 @@ helix-term/src/bridge/
     annotations.rs  annotations/*, :bb-annotations              (step 2d)
     reveal.rs     editor/reveal, the reveal animation           (step 2d)
     review.rs     review/*, :bb-review, :bb-diff, inline diff   (step 5)
+    watch.rs      watching open buffers' files, auto reload     (step 6)
+    files.rs      :bb-files, event/files                        (step 5)
 ```
 
 Step 1 creates every file, with the later ones as stubs that answer

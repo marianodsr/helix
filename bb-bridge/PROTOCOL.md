@@ -95,7 +95,7 @@ Params: `{ "client": "bb-plugin", "clientVersion": "0.1.0" }`
 
 Result: `{ "protocol": 1, "helixVersion", "pid", "cwd", "workspaceRoot",
 "capabilities": ["editor", "reload", "locations", "views", "command",
-"diagnostics", "lsp", "applyEdits", "annotations", "reveal", "review"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
+"diagnostics", "lsp", "applyEdits", "annotations", "reveal", "review", "watch"], "commandPolicy": "safe" }`. A capability is listed only when implemented;
 clients feature-detect on it.
 
 ### editor/state
@@ -166,6 +166,31 @@ opening a buffer and reports `"version": null`.
 Params: `{}`. Result: `{ "path", "docId", "languageId", "version", "modified",
 "primary", "ranges": [{ "start", "end", "text" }], "truncated" }` for the
 focused view. When every range is a bare cursor, `text` is that line.
+
+### Files changing on disk (capability `watch`)
+
+Helix watches the file of every open buffer. When one changes on disk:
+
+- a buffer with no unsaved changes is reloaded at once, keeping selections
+  and scroll position, and the changed text is shown with the reveal
+  animation (`[editor.bridge] reveal`); `u` undoes it like any reload;
+- a buffer with unsaved changes is left alone, the status line says the
+  file changed on disk, and subscribers get `event/externalChange`;
+- a file that was deleted leaves its buffer as it is, with a status-line
+  note; if it comes back, it is watched again.
+
+This needs no client and no request: it works the same with nothing
+connected. Clients learn about it from `event/documentChanged` (and
+`event/reloaded`, below) and do not need to call `editor/reload` when the
+capability is present. Several writes in quick succession (an editor's
+write-then-rename, a formatter after a save) are handled as one change.
+`[editor.bridge] watch = false` turns it off.
+
+`event/reloaded` (subscription kind `documents`): `{ "docId", "path",
+"version", "ranges": [Range], "removed": <count of removed lines>, "origin":
+"watch" | "request" | "focus" }`, sent after any reload, with the ranges
+that changed, so a client can follow the change (move the view there, build
+a list of places) without computing a diff itself.
 
 ### editor/reload
 
@@ -453,6 +478,7 @@ overrides key bindings, and it reads the user's normal Helix configuration.
 [editor.bridge]
 enable = true          # default in this fork; false disables the socket entirely
 commands = "safe"      # what editor/command may run: "safe", "all" or "none"
+watch = true           # reload open buffers when their file changes on disk
 reveal = true          # animate text an agent just wrote (editor/reveal)
 inline-diff = false    # draw the inline diff from the start, against HEAD
 # what :bb-files runs when no client offers a tree; {chooser} is a temp file the
