@@ -21,3 +21,11 @@ skip-levels = 1
 [keys.normal]
 F = "file_picker_in_current_buffer_directory"
 
+# space e opens the yazi file tree in hxb. Written as a macro so stock hx
+# still accepts this file (there, the key reports an unknown command).
+[keys.normal.space]
+e = "@:bb-files<ret>"
+
+[keys.select.space]
+e = "@:bb-files<ret>"
+

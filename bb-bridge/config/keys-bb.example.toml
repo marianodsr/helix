@@ -1,30 +1,32 @@
 # Suggested key bindings for the bridge commands. Nothing here is applied
 # automatically: copy the lines you want into ~/.config/helix/config.toml.
-# Every bridge command is an ordinary typed command, so any key works.
 #
-# They sit under `space t` ("thread"), which Helix leaves free, so none of
-# Helix's own bindings is replaced. Helix refuses a config that names a
-# command it does not have, so only copy a line once `:bb-status` lists the
-# capability it needs.
+# They are written as macros ("@:command<ret>") on purpose. Helix refuses a
+# whole config that names a typed command it does not have, so a plain
+# ":bb-send" would make a stock `hx` reject the file. A macro is only looked
+# up when the key is pressed: stock `hx` keeps loading the config and the key
+# reports an unknown command there.
+#
+# They sit under `space t` ("thread"), which Helix leaves free. `space e`
+# replaces Helix's own file explorer with the yazi tree.
+
+[keys.normal.space]
+e = "@:bb-files<ret>"          # the file tree (yazi)
 
 [keys.normal.space.t]
-s = ":bb-send"            # selection (or current line) to the thread's composer
-c = ":bb-comment"         # comment on the selection; opens a prompt
-C = ":bb-comments-send"   # send all pending comments to the agent
-i = ":bb-status"          # socket, clients and capabilities
+s = "@:bb-send<ret>"           # selection (or current line) to the thread's composer
+c = "@:bb-comment<ret>"        # comment on the selection; opens a prompt
+C = "@:bb-comments-send<ret>"  # send all pending comments to the agent
+n = "@:bb-next<ret>"           # next place in the active list (agent changes, tour, review)
+p = "@:bb-prev<ret>"
+l = "@:bb-locations<ret>"      # browse the active list
+g = "@:bb-go<ret>"             # accept a jump the agent asked for while you typed
+a = "@:bb-annotations<ret>"    # show or hide comments drawn in the code
+i = "@:bb-status<ret>"         # socket, clients and what this build offers
+
+[keys.select.space]
+e = "@:bb-files<ret>"
 
 [keys.select.space.t]
-s = ":bb-send"
-c = ":bb-comment"
-
-# Needs capability "locations":
-# [keys.normal.space.t]
-# n = ":bb-next"          # next place in the active list (agent changes, tour)
-# p = ":bb-prev"
-# l = ":bb-locations"     # browse the active list
-#
-# Needs capability "command" (the waiting behaviour):
-# g = ":bb-go"            # accept a jump the agent asked for while you typed
-#
-# Needs capability "annotations":
-# a = ":bb-annotations"   # show or hide comments drawn in the code
+s = "@:bb-send<ret>"
+c = "@:bb-comment<ret>"
