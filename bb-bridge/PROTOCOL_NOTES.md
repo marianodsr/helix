@@ -148,3 +148,113 @@ should know about.
   and clients delete them when the socket refuses connections.
 - Not available on Windows (no Unix sockets): the bridge and its `:bb-*`
   commands are left out there.
+
+## Step 2c: panes, selections, `editor/command`, not yanking the user
+
+### Panes
+
+- `view/list`: `layout` mirrors Helix's own tree. The root is always a
+  container, even around a single pane. `"vertical"` puts its children side
+  by side (`:vsplit`), `"horizontal"` stacks them (`:hsplit`). After closes
+  a container can sit directly inside one of the same direction (Helix does
+  not flatten them), and the root can hold a single container. `views` is in
+  layout order (left to right, top to bottom); `area` is in terminal cells
+  and includes the pane's own status line; `firstLine`/`lastLine` are as in
+  `editor/state` `visible`.
+- `view/focus` and `view/close` answer `{ "deferred": <bool> }` (PROTOCOL.md
+  says `{}`; every focus-moving method carries `deferred`). Focusing the
+  pane that already has focus answers `false` at once.
+- `view/close` (**differs**, additive): closing the **focused** pane moves
+  the user's focus, so it honours `interrupt` like `view/focus`; closing any
+  other pane never waits. Unknown `viewId`: `not_found`; the last pane:
+  `unsupported`.
+- `editor/select`: `primary` defaults to 0 and must index into `ranges`
+  (`invalid_params`, `field: "primary"`); an empty `ranges` is
+  `invalid_params`. Helix sorts the ranges and merges overlapping ones; the
+  primary follows its range. Positions are clamped as elsewhere. With
+  `"center": false` the view only scrolls as far as needed. Result
+  `{ "version", "deferred" }`; when deferred, `version` is the current one.
+  A `viewId` other than the focused pane does not move focus, but the
+  request still honours `interrupt` (it scrolls a pane the user can see).
+
+### Not yanking the user
+
+- The user is busy when any of these holds (the last two are **additions**
+  to PROTOCOL.md):
+  - Helix is in insert mode;
+  - a key was pressed in the last 1500 ms: any key bound to a command and any
+    character typed (hooks on `PostCommand` and `PostInsertChar`); keys the
+    bridge itself feeds do not count, mouse events do not count;
+  - a key sequence is half typed (`<space>`, `g` …);
+  - a prompt, picker or dialog is open (keys typed there fire no event, and a
+    jump behind an open `:` line would make the user's command run in the
+    wrong buffer). Popups (hover, signature help, completion) do not count.
+- Consequence for agents: after `editor/command` leaves Helix in insert mode
+  or with a prompt or picker open, the next `whenIdle` request waits. Finish
+  in one request, or pass `"interrupt": "always"`.
+- A deferred request is re-validated when `:bb-go` performs it; an error then
+  (the file was deleted, the pane closed, the policy refuses it) goes to the
+  status line. The slot does not expire; a newer request replaces it.
+- The notice is `bb wants to <what> (:bb-go)`: `show <path>:<line>` (path
+  relative to Helix's working directory when inside it), `close the pane
+  showing <path>`, `run :<line>`, `run <command>`, `press <keys>`. Like any
+  status message it is cleared by the user's next key, so it is shown again
+  once they pause for 1500 ms with the status line empty (for up to 60 s).
+- `:bb-go` with nothing pending fails with "Nothing from bb is waiting".
+- `editor/open` deferred: `{ "docId", "path", "version", "viewId": null,
+  "deferred": true }`, where `docId` and `version` are those of the buffer if
+  it is already open and `null` otherwise; nothing is loaded. `not_found`
+  and an unknown `viewId` are reported before deferring. `"focus": false`
+  never waits.
+- For the locations code (`locations/set` with `goto`, and later
+  `editor/reload`/`editor/reveal` with `follow`): call
+  `methods::interrupt::jump(editor, compositor, interrupt, what, act)`,
+  which runs `act` now or keeps it as the pending jump and returns
+  `Ok(None)`; parse the parameter with `Interrupt::parse`.
+
+### `editor/command`
+
+- Result: `{ "deferred": false, "mode", "status"?, "overlay"?,
+  "pendingKeys"? }`. `status` is present only when the command put a message
+  on the status line (Helix's `hint` is reported as `info`); when it put none
+  the user's previous message is left in place. Messages that arrive later
+  from async work (a language server's answer, a save) are not included.
+  `overlay` names what the command left on top of the editor: `"prompt"`,
+  `"picker"`, `"popup"` or `"other"`; `pendingKeys` is a half-typed key
+  sequence, for example `"<space>"`. Nothing ever waits for more input: the
+  editor is simply left in that state.
+- Deferred: `{ "deferred": true }`. The policy is checked again when it runs.
+- `typed`: a leading `:` is accepted. An unknown command (or an empty line)
+  is `invalid_params` with `field: "typed"`; a bare number is `goto`, as on
+  the command line. An error from the command itself is not an RPC error: it
+  is shown to the user, as Helix shows it, and returned as `status` with
+  severity `error`.
+- `static`: the exact names of Helix's static command list (not the `:typed`
+  or `@macro` forms a key map also accepts). `count` must be at least 1. A
+  command that waits for the next key (`find_next_char`, `replace`,
+  `select_register` …) is `unsupported`; send it with `keys`. The command
+  runs as a bound key would: `PostCommand` and mode-switch hooks, then the
+  compositor callbacks.
+- `keys`: all keys are delivered in one turn of the main loop. Each request
+  starts by dismissing a key sequence or a "next key" command the user (or an
+  earlier request) left half done, so a sequence cannot be continued across
+  requests. A picker that waits for a language server appears after the
+  response; send the keys for it in a second request.
+- Refusals are `unsupported` (1007) with `data.reason` (and `data.command`
+  when a command is to blame); for `keys`, also `data.key` and `data.sent`
+  (keys delivered before the refused one). After a refused key, Escape is
+  sent.
+- Policy (**differs**, stricter than the table in PROTOCOL.md): the full list
+  and the reason for each refusal is `bb-bridge/COMMAND_POLICY.md`. Beyond
+  PROTOCOL.md's list `safe` also refuses: the `write!` family (overwrites a
+  file changed on disk), `config-reload`, `workspace-trust`,
+  `workspace-untrust`, `workspace-exclude` (they load configuration, which
+  can name programs), `:set`/`:toggle` of `shell`, `clipboard-provider`,
+  `terminal`, `workspace-trust` and `bridge`, `lsp-workspace-command`, the
+  debugger, the `:bb-*` commands that speak to bb in the user's name,
+  `command_palette`, `suspend`, and keys bound to macros. `reload`/`rl` is
+  refused while the buffer is modified, `reload-all` while any buffer is.
+- The policy in force is the stricter of the one at start and the current
+  configuration; `bridge/hello` reports that one. `:set bridge.commands
+  none` (under `all`) takes effect at once; nothing short of a restart
+  loosens it.

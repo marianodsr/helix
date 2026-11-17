@@ -27,6 +27,8 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
 | `helix-term/tests/integration.rs` | 19–20, 23–25 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_command;` (Unix) | Step 2c integration tests (panes, `editor/command` and its policy, not yanking the user). |
+| `helix-view/src/tree.rs` | 969–986 (end of file) | `Tree::root()` and `Tree::container(id)`, read-only, in an `impl Tree` block of their own | `view/list` mirrors Helix's layout tree. Containers and their layout are private, and the tree cannot be rebuilt from pane areas: closing a pane can leave a container nested in one of the same direction, which looks the same on screen. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.
