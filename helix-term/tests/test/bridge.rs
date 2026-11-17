@@ -344,7 +344,8 @@ async fn lifecycle_registry_and_hello() -> anyhow::Result<()> {
             "lsp",
             "applyEdits",
             "annotations",
-            "reveal"
+            "reveal",
+            "review"
         ])
     );
     assert_eq!(hello["commandPolicy"], "safe");

@@ -48,10 +48,11 @@ pub enum Kind {
     Lsp,
     ExternalChange,
     Files,
+    Review,
 }
 
 impl Kind {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [Kind; Self::COUNT] = [
         Kind::Selection,
         Kind::Documents,
@@ -61,6 +62,7 @@ impl Kind {
         Kind::Lsp,
         Kind::ExternalChange,
         Kind::Files,
+        Kind::Review,
     ];
 
     pub const fn bit(self) -> u32 {
@@ -77,6 +79,7 @@ impl Kind {
             Kind::Lsp => "lsp",
             Kind::ExternalChange => "externalChange",
             Kind::Files => "files",
+            Kind::Review => "review",
         }
     }
 
@@ -719,6 +722,7 @@ pub fn send_event(snap: SendSnap) -> SendEvent {
         ranges,
         truncated,
         send_now: snap.send_now,
+        review_id: methods::review::active_id(),
     }
 }
 

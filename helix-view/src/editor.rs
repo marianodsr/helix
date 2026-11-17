@@ -2666,6 +2666,8 @@ pub struct BridgeConfig {
     /// What `:bb-files` runs when no client shows a tree: `{chooser}` is the
     /// file it writes the chosen paths to, `{path}` the focused file.
     pub file_manager: Vec<String>,
+    /// Draw the inline diff from the start (`:bb-diff`). Defaults to `false`.
+    pub inline_diff: bool,
 }
 
 impl Default for BridgeConfig {
@@ -2677,6 +2679,7 @@ impl Default for BridgeConfig {
             file_manager: ["yazi", "--chooser-file", "{chooser}", "{path}"]
                 .map(String::from)
                 .to_vec(),
+            inline_diff: false,
         }
     }
 }

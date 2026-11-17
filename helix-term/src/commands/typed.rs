@@ -46,7 +46,7 @@ impl CommandCompleter {
         }
     }
 
-    const fn positional(completers: &'static [Completer]) -> Self {
+    pub(crate) const fn positional(completers: &'static [Completer]) -> Self {
         Self {
             positional_args: completers,
             var_args: completers::none,

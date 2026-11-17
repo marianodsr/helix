@@ -12,6 +12,7 @@ pub mod locations;
 pub mod lsp;
 pub mod reload;
 pub mod reveal;
+pub mod review;
 pub mod send;
 pub mod views;
 
@@ -25,6 +26,7 @@ pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
         .chain(interrupt::COMMANDS)
         .chain(annotations::COMMANDS)
         .chain(files::COMMANDS)
+        .chain(review::COMMANDS)
 }
 
 /// Hooks of the later-step modules, registered when the bridge starts.

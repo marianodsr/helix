@@ -28,6 +28,8 @@ mod test {
     mod bridge_files;
     #[cfg(unix)]
     mod bridge_lsp;
+    #[cfg(unix)]
+    mod bridge_review;
     mod command_line;
     mod commands;
     #[cfg(unix)]

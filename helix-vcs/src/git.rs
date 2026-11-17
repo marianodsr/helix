@@ -19,6 +19,7 @@ use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
 
 use crate::FileChange;
 
+pub mod review;
 #[cfg(test)]
 mod test;
 
@@ -31,6 +32,9 @@ pub fn get_diff_base(file: &Path, trust_full: bool) -> Result<Vec<u8>> {
     debug_assert!(!file.exists() || file.is_file());
     debug_assert!(file.is_absolute());
     let file = gix::path::realpath(file).context("resolve symlinks")?;
+    if let Some(base) = review::diff_base(&file, trust_full) {
+        return base;
+    }
 
     // TODO cache repository lookup
 

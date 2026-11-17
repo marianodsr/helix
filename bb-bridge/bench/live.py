@@ -3,6 +3,7 @@
 
     live.py verify  [--hx PATH] [--overflow-seconds 70]
     live.py files   [--hx PATH]                   # only the :bb-files checks
+    live.py review  [--hx PATH]                   # only the review checks (step 5)
     live.py bench   [--hx PATH]
     live.py compat  [--hx PATH] [--config DIR]   # DIR contains helix/config.toml
     live.py lspbench [--hx PATH] [-n 50]          # step 2b, needs ~/go/bin/gopls
@@ -452,6 +453,7 @@ def verify(args):
     _verify_2c(args, check)
     verify_annotations_reveal(args, check)
     verify_files(args, check)
+    verify_review(args, check)
     # --- step 2b: diagnostics and lsp (bb-bridge/bench/live_lsp.py) ---
     live_lsp.verify(args, Sandbox, check)
     # --- end step 2b ---
@@ -476,7 +478,7 @@ def _verify(args, sb, hx, check):
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
     check(hello["capabilities"] == ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp",
-                                    "applyEdits", "annotations", "reveal"] and hello["commandPolicy"] == "safe",
+                                    "applyEdits", "annotations", "reveal", "review"] and hello["commandPolicy"] == "safe",
           "hello: every capability, policy safe", hello)
 
     st = a.call("editor/state")
@@ -1005,6 +1007,119 @@ def _verify_files(sb, hx, check):
     check(not os.path.exists(log), "files: with a client subscribed the program does not run")
 
 
+# --- step 5: review/set, the inline diff, :bb-review, :bb-diff ---------------------
+
+
+def verify_review_only(args):
+    check = Checks()
+    verify_review(args, check)
+    print(f"\n{check.passed} passed, {check.failed} failed")
+    return 1 if check.failed else 0
+
+
+def _git(repo, *args):
+    env = dict(os.environ, GIT_AUTHOR_NAME="a", GIT_AUTHOR_EMAIL="a@example.com",
+               GIT_COMMITTER_NAME="c", GIT_COMMITTER_EMAIL="c@example.com")
+    env.pop("GIT_DIR", None)
+    return subprocess.run(["git", "-C", repo, *args], env=env, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def verify_review(args, check):
+    sb = Sandbox(bindings=False)
+    repo = sb.repo
+    shutil.rmtree(os.path.join(repo, ".git"), ignore_errors=True)
+    _git(repo, "init", "-q")
+    text = "".join(f"line {i}\n" for i in range(1, 41))
+    sb.write("review.txt", text.replace("line 5\n", "line 5 LIVE-REMOVED-TEXT\n"))
+    sb.write("gone.txt", "LIVE-GONE-TEXT\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    sb.write("review.txt", text.replace("line 5\n", "line 5 LIVE-NEW-TEXT\n"))
+    os.remove(os.path.join(repo, "gone.txt"))
+    hx = sb.start(args.hx, files=("review.txt",))
+    try:
+        _verify_review(sb, hx, check, base)
+    finally:
+        hx.kill()
+        if not args.keep:
+            sb.cleanup()
+
+
+def _verify_review(sb, hx, check, base):
+    path, gone = sb.path("review.txt"), os.path.join(sb.repo, "gone.txt")
+    reg = sb.registry(hx.pid)
+    if not check(reg is not None, "review: registry file written"):
+        return
+    c = Client(reg["socket"])
+    hello = c.call("bridge/hello", {"client": "live-review"})
+    check("review" in hello["capabilities"], "review: capability", hello["capabilities"])
+    c.call("events/subscribe", {"events": ["send"]})
+    time.sleep(0.3)
+    m = hx.mark()
+    r = c.call("review/set", {"id": "live", "title": "Live", "base": {"rev": base}, "files": [
+        {"path": path, "status": "modified", "additions": 1, "deletions": 1},
+        {"path": gone, "status": "deleted", "additions": 0, "deletions": 1},
+    ]})
+    check(r == {"files": 2, "base": base, "deferred": False}, "review: review/set result", r)
+    check(hx.wait_text("line 5 LIVE-REMOVED-TEXT", m), "review: the removed line is drawn above the change")
+    st = c.call("review/state", {})
+    check(st["active"] and st["inline"] and st["files"] == 2, "review: review/state", st)
+    t = c.call("editor/text", {"path": path})
+    check("LIVE-REMOVED-TEXT" not in t["text"] and not t["modified"], "review: the removed line is not in the document")
+
+    # typing while reviewing: lands in the document, undo works
+    hx.send("ggOLIVE-TYPED", pause=0.1)
+    hx.esc()
+    t = c.call("editor/text", {"path": path})
+    check(t["text"].startswith("LIVE-TYPED\nline 1\n"), "review: typed text goes into the document", t["text"][:40])
+    hx.send("u", pause=0.3)
+    t = c.call("editor/text", {"path": path})
+    check(t["text"].startswith("line 1\n") and not t["modified"], "review: undo")
+
+    # comments carry the review
+    hx.send(":bb-comment about this" + ENTER, pause=0.2)
+    ev = c.event("event/send", timeout=3)
+    check(ev.get("reviewId") == "live", "review: event/send carries reviewId", ev)
+
+    # the picker: both files, with counts
+    m = hx.mark()
+    hx.send(":bb-review" + ENTER, pause=0.5)
+    check(hx.wait_text("+1 -1", m) and hx.wait_text("gone.txt", m), "review: :bb-review lists the files")
+    check(hx.wait_text("-line 5 LIVE-REMOVED-TEXT", m) or hx.wait_text("- line 5 LIVE-REMOVED-TEXT", m),
+          "review: the preview shows the diff")
+    m = hx.mark()
+    hx.send("gone" + ENTER, pause=0.6)
+    st = c.call("editor/state", {})
+    check(st["focused"]["path"] == gone + " (deleted)" or st["focused"]["path"].endswith("gone.txt (deleted)"),
+          "review: a deleted file opens as '<path> (deleted)'", st["focused"]["path"])
+    t = c.call("editor/text", {"docId": st["focused"]["docId"]})
+    check(t["text"] == "LIVE-GONE-TEXT\n", "review: with its text at the base", t["text"])
+    c.call("editor/open", {"path": path, "interrupt": "always"})
+
+    # :bb-diff hides and shows it
+    m = hx.mark()
+    hx.send(":bb-diff" + ENTER, pause=0.3)
+    check(hx.wait_text("Inline diff off", m), "review: :bb-diff off")
+    check(c.call("review/state", {})["inline"] is False, "review: review/state follows :bb-diff")
+    m = hx.mark()
+    hx.send(":bb-diff" + ENTER, pause=0.3)
+    check(hx.wait_text("Inline diff on (Live)", m), "review: :bb-diff on")
+
+    # errors and the end
+    try:
+        c.call("review/set", {"id": "x", "base": {"rev": "0" * 40}, "files": []})
+        check(False, "review: an unknown revision is refused")
+    except RpcError as err:
+        data = err.error.get("data") or {}
+        check(err.code == 1007 and data.get("reason") == "unknown revision",
+              "review: an unknown revision is refused", err.error)
+    check(c.call("review/clear", {}) == {}, "review: review/clear")
+    st = c.call("review/state", {})
+    check(not st["active"] and not st["inline"], "review: cleared", st)
+
+
 # --- step 2d: annotations and reveal --------------------------------------------
 
 
@@ -1325,7 +1440,7 @@ def snapshot(directory):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["verify", "files", "bench", "compat", "lspbench", "lspbig", "redraw"])
+    ap.add_argument("mode", choices=["verify", "files", "review", "bench", "compat", "lspbench", "lspbig", "redraw"])
     ap.add_argument("--hx", default=os.path.join(ROOT, "target", "release", "hx"))
     ap.add_argument("--overflow-seconds", type=float, default=70)
     ap.add_argument("--config", default=os.path.join(ROOT, "bb-bridge", "config"))
@@ -1340,7 +1455,7 @@ def main():
     ap.add_argument("--before", help="redraw: the binary to compare against")
     ap.add_argument("--settle", type=float, default=0, help="lspbig: wait up to this long for gopls to go idle")
     args = ap.parse_args()
-    modes = {"verify": verify, "files": verify_files_only, "bench": bench, "compat": compat,
+    modes = {"verify": verify, "files": verify_files_only, "review": verify_review_only, "bench": bench, "compat": compat,
              "lspbench": lambda a: live_lsp.bench(a, Sandbox), "lspbig": lambda a: live_lsp.big(a, Sandbox),
              "redraw": lambda a: redraw.bench(a, Sandbox)}
     sys.exit(modes[args.mode](args))

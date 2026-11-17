@@ -100,6 +100,7 @@ impl Shared {
 /// after the editor exists; binding the socket happens in a background task.
 pub fn start(editor: &Editor) {
     let begin = Instant::now();
+    methods::review::init(editor);
     if !enabled(
         editor.config().bridge.enable,
         std::env::var_os("HELIX_BRIDGE"),

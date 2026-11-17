@@ -2,13 +2,14 @@
 
 Every edit to a file that exists upstream (base `49986e667`), with the lines
 (in this branch) and the reason. Everything else is new: `helix-term/src/bridge/`,
-`helix-view/src/annotations/bridge.rs`, `helix-term/tests/test/bridge*.rs`
+`helix-view/src/annotations/bridge.rs`, `helix-vcs/src/git/review.rs`, `helix-term/tests/test/bridge*.rs`
 and `bb-bridge/`. Regenerate the hunk list with:
 
 ```sh
 git diff 49986e667 -U0 -- helix-term helix-view helix-lsp Cargo.lock \
     ':!helix-term/src/bridge' ':!helix-term/tests/test/bridge*.rs' \
-    ':!helix-view/src/annotations/bridge.rs' | grep -E '^(\+\+\+|@@)'
+    ':!helix-view/src/annotations/bridge.rs' ':!helix-vcs/src/git/review.rs' \
+    | grep -E '^(\+\+\+|@@)'
 ```
 
 | File | Lines | Change | Why |
@@ -26,6 +27,7 @@ git diff 49986e667 -U0 -- helix-term helix-view helix-lsp Cargo.lock \
 | `helix-term/src/application.rs` | 856 | `crate::bridge::diagnostics_published(&uri);` in the `publishDiagnostics` handler (step 2b) | `DiagnosticsDidChange` only fires for open documents; servers like gopls publish for the whole workspace, and `event/diagnostics` covers those paths too. One relaxed atomic load when nobody subscribed. |
 | `helix-term/src/application.rs` | 1360 | `crate::bridge::stop();` in `close` | Remove socket and registry file on every clean exit (`:q`, SIGTERM, SIGINT all end here). |
 | `helix-term/src/commands/typed.rs` | 42 | `const fn none()` -> `pub(crate) const fn none()` | Bridge typed commands live in the bridge module and need an empty completer. |
+| `helix-term/src/commands/typed.rs` | 49 | `const fn positional()` -> `pub(crate) const fn positional()` (step 5) | `:bb-review` completes its target words (`uncommitted`, `branch`, …) through Helix's own completer table. |
 | `helix-term/src/commands/typed.rs` | 4110 | `.chain(crate::bridge::typable_commands())` in `TYPABLE_COMMAND_MAP` | Makes `:bb-*` real typed commands: runnable, bindable from `config.toml` (`C = ":bb-comment"`), documented. |
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
@@ -33,13 +35,15 @@ git diff 49986e667 -U0 -- helix-term helix-view helix-lsp Cargo.lock \
 | `helix-term/src/ui/editor.rs` | 208 | `crate::bridge::decorate(..)` just before `render_document` in `render_view` (step 2d) | Draws gutter signs, line backgrounds, the annotations' rows and the reveal; after every other decoration, so its virtual lines stack in the order `text_annotations` reserved them. Returns at once when the document has none. |
 | `helix-term/src/ui/editor.rs` | 1594 | `crate::bridge::focus_gained(context.editor);` in the `Event::FocusGained` arm (step 2a) | There is no editor event for the terminal regaining focus; this arm is where Helix already handles it (focus events reach the editor view under pickers and prompts, which ignore them). The bridge only copies ids there and stats files on a blocking thread. |
 | `helix-term/tests/integration.rs` | 19–28, 31–33 | `mod bridge;`, `bridge_annotations`, `bridge_buffers`, `bridge_command`, `bridge_lsp` and the key-press benchmark module, each `#[cfg(unix)]` | The bridge's integration tests (step 1, 2d, 2a, 2c, 2b) and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-vcs/src/git.rs` | 22, 35–37 | `pub mod review;` and, first in `get_diff_base` after the path is resolved, `if let Some(base) = review::diff_base(&file, trust_full) { return base; }` (step 5) | "The file at the review's base" in the one place every diff base comes from: opening a file, `:reload`, the bridge's reloads. With no review, or a file outside the review's repository, it returns `None` after one `RwLock` read and a path prefix check, and Helix reads `HEAD` as before. The override lives in the new `git/review.rs`, a child module so it can use `open_repo` and `find_file_in_commit`. |
+| `helix-vcs/src/lib.rs` | 14–15 | `#[cfg(feature = "git")] pub use git::review;` (step 5) | The bridge sets and clears the review's base and reads blobs for the picker. |
 | `helix-view/src/editor.rs` | 438–439 | `pub bridge: BridgeConfig` field in `Config` | `[editor.bridge]`; `Config` denies unknown fields, so the section must be declared here. |
 | `helix-view/src/editor.rs` | 1221 | `bridge: BridgeConfig::default()` | Default of the field above. |
-| `helix-view/src/editor.rs` | 2655–2685 (end of file) | `BridgeConfig`, `BridgeCommandPolicy` | The section's type: `enable` (default true), `commands` (`safe`/`all`/`none`), `reveal` (step 2d). `file-manager` (what `:bb-files` runs without a client). Appended at the end to stay out of upstream's way. |
+| `helix-view/src/editor.rs` | 2655–2685 (end of file) | `BridgeConfig`, `BridgeCommandPolicy` | The section's type: `enable` (default true), `commands` (`safe`/`all`/`none`), `reveal` (step 2d), `file-manager` (what `:bb-files` runs without a client), `inline-diff` (step 5). Appended at the end to stay out of upstream's way. |
 | `helix-view/src/tree.rs` | 725–742 (just before the tests) | `Tree::root()` and `Tree::container(id)`, read-only, in an `impl Tree` block of their own (step 2c) | `view/list` mirrors Helix's layout tree. Containers and their layout are private, and the tree cannot be rebuilt from pane areas: closing a pane can leave a container nested in one of the same direction, which looks the same on screen. |
 | `helix-view/src/annotations.rs` | 1 | `pub mod bridge;` (step 2d) | Annotation and reveal data live next to the inline-diagnostics annotations, in a new file. |
 | `helix-view/src/document.rs` | 237–238, 781 | `pub bridge_annotations` field on `Document` and its default (step 2d) | The text-annotation machinery borrows what it shows from the document (like inlay hints and diagnostics), so the data must live there. |
-| `helix-view/src/document.rs` | 2581–2587 (just before the tests) | `impl Document { pub fn last_saved_time() }` (step 2a) | The mtime Helix last read or wrote is private. The bridge compares it with the file's mtime to find external changes without a file watcher, and to refuse `applyEdits` with `save` before editing when Helix's own save would refuse. A separate `impl` block, to stay out of upstream's way. |
+| `helix-view/src/document.rs` | 2581–2593 (just before the tests) | `impl Document { pub fn last_saved_time() }` (step 2a), `pub fn clear_diff_handle()` (step 5) | The mtime Helix last read or wrote is private. The bridge compares it with the file's mtime to find external changes without a file watcher, and to refuse `applyEdits` with `save` before editing when Helix's own save would refuse. A separate `impl` block, to stay out of upstream's way. `clear_diff_handle`: when a review ends, a file it compared with an empty base (new in the review, untracked at `HEAD`) must stop diffing, as `Document::reload` does when `HEAD` has no base; the field is private. |
 | `helix-view/src/view.rs` | 524 | `annotations::bridge::add_text_annotations(..)` at the end of `View::text_annotations` (step 2d) | Reserves the annotations' virtual lines and adds the reveal overlays, so cursor motion, scrolling and mouse positions account for them. Last, so they stack under inline diagnostics. |
 | `helix-lsp/src/client.rs` | 43–46, 290, 294–299 | thread-local `LAST_REQUEST_ID`, set in `next_request_id`; `pub fn Client::last_request_id()` (step 2b) | Helix never sends `$/cancelRequest` and does not expose request ids. Read right after a typed request method returns (same thread, nothing in between), it names that request, so `lsp/query` can cancel it on timeout or `$/cancel` while still using Helix's own methods. No behaviour change for Helix. |
 

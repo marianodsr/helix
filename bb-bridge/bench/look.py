@@ -150,14 +150,14 @@ class Scene:
             "XDG_CACHE_HOME": os.path.join(self.root, "cache"),
             "XDG_DATA_HOME": os.path.join(self.root, "data"),
             "XDG_STATE_HOME": os.path.join(self.root, "state"),
-            "HELIX_RUNTIME": os.path.join(ROOT, "runtime"),
+            "HELIX_RUNTIME": args.runtime,
             "TERM": "tmux-256color",
             "COLORTERM": "truecolor",
             "PATH": "/usr/bin:/bin",
             "LANG": "en_US.UTF-8",
         }
         envs = " ".join(f"{k}={v}" for k, v in env.items())
-        self.tmux.start(f"cd {self.repo} && env -i {envs} {args.hx} config.go")
+        self.tmux.start(f"cd {self.repo} && env -i {envs} {args.hx} config.go; echo HX-EXITED $?; sleep 30")
         bridge = os.path.join(self.root, "cache", "helix", "bridge")
         deadline = time.monotonic() + 10
         reg = None
@@ -182,12 +182,15 @@ class Scene:
         return self.call("annotations/set", {"namespace": ns, "path": self.path, "items": items})
 
     def goto(self, line):
-        self.call("editor/open", {"path": self.path, "line": line})
+        self.call("editor/open", {"path": self.path, "line": line, "interrupt": "always"})
         time.sleep(0.15)
 
     def snap(self, name, delay=0.25):
         time.sleep(delay)
         text = self.tmux.capture()
+        if "HX-EXITED" in text:
+            print(text)
+            raise SystemExit(f"hx exited before {name}")
         out = self.args.out
         with open(os.path.join(out, name + ".ansi"), "w") as f:
             f.write(text)
@@ -323,6 +326,118 @@ def scenes(s, which):
         s.snap("11-reveal-done", delay=1.5)
 
 
+# --- step 5: the inline diff and the review picker --------------------------------
+
+# What the review changes in GO: a long doc comment edited (soft-wraps), a
+# changed line, an added block, two removed lines, a long removed function.
+REVIEW_EXTRA = """
+// String describes cfg for logs: every field, in the order they are read,
+// with the tags joined by commas so a log line stays on one line.
+func (cfg *Config) String() string {
+	var b strings.Builder
+	b.WriteString("listen=")
+	b.WriteString(cfg.Listen)
+	b.WriteString(" data=")
+	b.WriteString(cfg.DataDir)
+	b.WriteString(" replicas=")
+	b.WriteString(fmt.Sprint(cfg.Replicas))
+	b.WriteString(" tags=")
+	b.WriteString(strings.Join(cfg.Tags, ","))
+	return b.String()
+}
+"""
+
+
+def review_text():
+    text = GO + REVIEW_EXTRA
+    text = text.replace(
+        "and fills in defaults for anything it does not set, so that callers never see a zero Replicas or an empty DataDir.",
+        "and fills in defaults for anything it leaves out, so callers never see a zero Replicas, an empty DataDir or a nil Tags slice.",
+    )
+    text = text.replace(
+        "\t\treturn nil, err\n\t}\n\tcfg :=",
+        "\t\treturn nil, fmt.Errorf(\"config: read %s: %w\", path, err)\n\t}\n\tcfg :=",
+    )
+    text = text.replace(
+        "\tcfg := &Config{Replicas: 1}\n",
+        "\tcfg := &Config{Replicas: 1}\n\tif len(data) == 0 {\n\t\treturn nil, ErrNoListen\n\t}\n",
+    )
+    text = text.replace('\t\tcase "tags":\n\t\t\tcfg.Tags = strings.Split(value, ",")\n', "")
+    text = text.replace(REVIEW_EXTRA, "\n")
+    return text
+
+
+def git(repo, *args):
+    env = dict(os.environ, GIT_AUTHOR_NAME="a", GIT_AUTHOR_EMAIL="a@example.com",
+               GIT_COMMITTER_NAME="c", GIT_COMMITTER_EMAIL="c@example.com")
+    env.pop("GIT_DIR", None)
+    return subprocess.run(["git", "-C", repo, *args], env=env, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def review_scenes(s, which, theme):
+    def want(name):
+        return not which or name in which
+
+    tag = "light" if "latte" in theme or "light" in theme else "dark"
+    repo = s.repo
+    shutil.rmtree(os.path.join(repo, ".git"), ignore_errors=True)
+    git(repo, "init", "-q")
+    with open(s.path, "w") as f:
+        f.write(GO + REVIEW_EXTRA)
+    with open(os.path.join(repo, "legacy.go"), "w") as f:
+        f.write("package config\n\n// Deprecated: use Load.\nfunc Read(path string) (*Config, error) { return Load(path) }\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "base", "--no-gpg-sign")
+    base = git(repo, "rev-parse", "HEAD")
+    with open(s.path, "w") as f:
+        f.write(review_text())
+    os.remove(os.path.join(repo, "legacy.go"))
+    with open(os.path.join(repo, "defaults.go"), "w") as f:
+        f.write("package config\n\n// DefaultReplicas is used when the file sets none.\nconst DefaultReplicas = 1\n")
+    s.call("editor/reload", {})
+    files = [
+        {"path": s.path, "status": "modified", "additions": 5, "deletions": 18},
+        {"path": os.path.join(repo, "defaults.go"), "status": "added", "additions": 4, "deletions": 0},
+        {"path": os.path.join(repo, "legacy.go"), "status": "deleted", "additions": 0, "deletions": 4},
+    ]
+    s.call("review/set", {"id": "look", "title": "Branch look", "base": {"rev": base}, "files": files})
+    time.sleep(0.5)
+    if want("review-modified"):
+        s.goto(26)
+        s.snap(f"r01-modified-{tag}")
+    if want("review-added"):
+        s.goto(31)
+        s.snap(f"r02-pure-addition-{tag}")
+    if want("review-deleted"):
+        s.goto(44)
+        s.snap(f"r03-pure-deletion-{tag}")
+    if want("review-comment"):
+        s.annotate([{"line": 25, "endLine": 26, "text": "Wrap with the path so the log says which file. Also check the error kind?"},
+                    {"line": 25, "endLine": 26, "kind": "reply", "text": "Done: fmt.Errorf with %w keeps errors.Is working."}])
+        s.goto(26)
+        s.snap(f"r04-next-to-comment-{tag}")
+        s.call("annotations/clear", {"namespace": "review"})
+    if want("review-long"):
+        s.goto(62)
+        s.snap(f"r05-long-removed-{tag}")
+    if want("review-softwrap"):
+        s.goto(20)
+        s.snap(f"r06-soft-wrapped-{tag}")
+    if want("review-split"):
+        s.goto(28)
+        s.tmux.keys(":vsplit", "Enter")
+        s.tmux.keys(":vsplit", "Enter")
+        s.goto(28)
+        s.snap(f"r07-narrow-split-{tag}")
+        s.tmux.keys("C-w", "o")
+    if want("review-picker"):
+        s.tmux.keys(":bb-review", "Enter")
+        time.sleep(0.6)
+        s.snap(f"r08-picker-{tag}")
+        s.tmux.keys("Escape")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -331,12 +446,18 @@ def main():
     ap.add_argument("--cols", type=int, default=120)
     ap.add_argument("--rows", type=int, default=36)
     ap.add_argument("--extra-config", default="")
+    ap.add_argument("--review", action="store_true", help="the review scenes only")
     ap.add_argument("--scene", action="append", default=[])
+    ap.add_argument("--runtime", default=os.path.join(ROOT, "runtime"),
+                    help="runtime directory (one with built grammars, for syntax colours)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     s = Scene(args)
     try:
-        scenes(s, set(args.scene))
+        if any(n.startswith("review") for n in args.scene) or args.review:
+            review_scenes(s, {n for n in args.scene if n.startswith("review")}, args.theme)
+        if not args.review:
+            scenes(s, {n for n in args.scene if not n.startswith("review")})
     finally:
         s.close()
 

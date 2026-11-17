@@ -11,6 +11,12 @@
 //! - `Diagnostics` / `Annotations` (step 2d): 500 warnings shown at the end
 //!   of their lines, or 500 bridge annotations under them, every 8 lines
 //!   over the first 4000 (where the key sequence moves), bridge listening.
+//! - `DiffGutter` / `InlineDiff` (step 5): a diff base with 500 hunks over
+//!   the same lines (changed, added and removed lines in turn), with
+//!   Helix's own gutter only, or with the bridge's inline diff drawn too.
+//!
+//! `KEYPRESS_ONLY=InlineDiff,Diagnostics` runs only those rows.
+//! `KEYPRESS_DEBUG=1` prints where each run ended and how many panes it drew.
 //!
 //! Run with `bb-bridge/bench/keypress.sh`; it is an ignored test.
 
@@ -81,6 +87,8 @@ enum Variant {
     Subscribed,
     Diagnostics,
     Annotations,
+    DiffGutter,
+    InlineDiff,
     // bridge:end
 }
 
@@ -122,6 +130,32 @@ fn mark_lines(app: &mut Application, variant: Variant) {
                 })
                 .collect();
             doc.replace_diagnostics(diagnostics, &[], Some(&provider));
+        }
+        Variant::DiffGutter | Variant::InlineDiff => {
+            // the base differs from the text near every eighth line
+            let mut base = String::new();
+            for (i, line) in text.lines().enumerate() {
+                let line = line.to_string();
+                if i >= 2 && i < 4000 && (i - 2) % 8 == 0 {
+                    let kinds = if std::env::var_os("KEYPRESS_ADDED_ONLY").is_some() {
+                        1
+                    } else {
+                        3
+                    };
+                    match ((i / 8) % kinds) + (kinds == 1) as usize {
+                        0 => base.push_str(&line.replace("return", "return 0 +")),
+                        1 => {} // added in the text
+                        _ => {
+                            base.push_str(&line);
+                            base.push_str("\tremoved := 1\n");
+                        }
+                    }
+                } else {
+                    base.push_str(&line);
+                }
+            }
+            doc.set_diff_base(base.into_bytes());
+            helix_view::annotations::bridge::set_inline_diff(variant == Variant::InlineDiff);
         }
         Variant::Annotations => {
             let items = lines
@@ -211,13 +245,40 @@ fn run(variant: Variant, file: &std::path::Path, keys: &str, passes: usize) -> (
         }
         // bridge:end
 
+        // bridge:begin
+        if matches!(variant, Variant::DiffGutter | Variant::InlineDiff) {
+            // the diff worker computes the first hunks in the background
+            for _ in 0..200 {
+                let doc = helix_view::doc!(app.editor);
+                if doc.diff_handle().is_some_and(|h| h.load().len() > 400) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        // bridge:end
         send(&tx, MOVE, WARMUP_PASSES);
         app.event_loop_until_idle(&mut stream).await;
 
         let keys = send(&tx, &keys, passes);
+        let drawn = helix_term::bridge::views_drawn();
         let started = Instant::now();
         app.event_loop_until_idle(&mut stream).await;
         let elapsed = started.elapsed();
+        if std::env::var_os("KEYPRESS_DEBUG").is_some() {
+            let (view, doc) = helix_view::current_ref!(app.editor);
+            let text = doc.text().slice(..);
+            let cursor = doc.selection(view.id).primary().cursor(text);
+            eprintln!(
+                "KEYPRESS_DEBUG {variant:?} drawn={} cursor_line={} anchor_line={} mode={:?} status={:?} hunks={:?}",
+                helix_term::bridge::views_drawn() - drawn,
+                text.char_to_line(cursor),
+                text.char_to_line(doc.view_offset(view.id).anchor),
+                app.editor.mode(),
+                app.editor.get_status(),
+                doc.diff_handle().map(|h| h.load().len()),
+            );
+        }
 
         // bridge:begin
         if variant == Variant::Subscribed {
@@ -254,8 +315,16 @@ fn keypress_bench() {
         Variant::Subscribed,
         Variant::Diagnostics,
         Variant::Annotations,
+        Variant::DiffGutter,
+        Variant::InlineDiff,
         // bridge:end
     ];
+    let only = std::env::var("KEYPRESS_ONLY").unwrap_or_default();
+    let variants: Vec<Variant> = variants
+        .iter()
+        .copied()
+        .filter(|v| only.is_empty() || only.split(',').any(|o| o == format!("{v:?}")))
+        .collect();
     let sequences = [
         ("move", MOVE, setting("KEYPRESS_PASSES", MOVE_PASSES)),
         ("edit", EDIT, setting("KEYPRESS_EDIT_PASSES", EDIT_PASSES)),

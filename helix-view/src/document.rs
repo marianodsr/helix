@@ -2583,6 +2583,12 @@ impl Document {
     pub fn last_saved_time(&self) -> SystemTime {
         self.last_saved_time
     }
+
+    /// bb bridge: stop diffing, when the review that gave this file a base
+    /// ends and `HEAD` has none for it (as `reload` does).
+    pub fn clear_diff_handle(&mut self) {
+        self.diff_handle = None;
+    }
 }
 
 #[cfg(test)]

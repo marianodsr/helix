@@ -9,6 +9,7 @@
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use helix_core::diagnostic::Severity;
 use helix_core::syntax::Highlight;
@@ -17,6 +18,10 @@ use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_core::{line_ending, ChangeSet, Position, RopeSlice};
 use helix_core::{Assoc, Rope};
+
+use helix_event::runtime_local;
+use helix_vcs::{DiffHandle, Hunk};
+use parking_lot::Mutex;
 
 use crate::Document;
 
@@ -141,6 +146,8 @@ pub struct BridgeAnnotations {
     /// Sorted by (`last_line`, `namespace`, `seq`): the order they stack in.
     items: Vec<Item>,
     pub reveal: Option<Reveal>,
+    /// The inline diff's copy of the document's diff.
+    diff: Mutex<DiffSnapshot>,
 }
 
 impl BridgeAnnotations {
@@ -418,6 +425,18 @@ pub fn add_text_annotations<'a>(
     doc: &'a Document,
     width: u16,
 ) {
+    add_annotation_rows(annotations, doc, width);
+    if inline_diff() {
+        if let Some(handle) = doc.diff_handle() {
+            let snapshot = doc.bridge_annotations.refresh_diff(handle);
+            if !snapshot.hunks.is_empty() {
+                annotations.add_line_annotation(Box::new(DiffRows::new(doc, snapshot, width)));
+            }
+        }
+    }
+}
+
+fn add_annotation_rows<'a>(annotations: &mut TextAnnotations<'a>, doc: &'a Document, width: u16) {
     let this = &doc.bridge_annotations;
     if this.is_empty() {
         return;
@@ -444,6 +463,275 @@ pub fn add_text_annotations<'a>(
     }));
 }
 
+// --- inline diff -------------------------------------------------------------
+
+runtime_local! {
+    /// `:bb-diff`, a review, or `[editor.bridge] inline-diff`.
+    static INLINE: AtomicBool = AtomicBool::new(false);
+}
+
+/// Is the inline diff drawn? One relaxed load: the only cost when it is off.
+#[inline]
+pub fn inline_diff() -> bool {
+    INLINE.load(Ordering::Relaxed)
+}
+
+pub fn set_inline_diff(on: bool) {
+    INLINE.store(on, Ordering::Relaxed);
+}
+
+/// Removed lines shown per hunk; the rest is one summary row.
+pub const MAX_REMOVED_LINES: usize = 400;
+
+/// Helix's own diff of a document (its base and hunks), copied out so that
+/// drawing never holds the diff's lock: the gutter takes that lock for the
+/// whole frame, and a second read on the same thread can deadlock behind
+/// the diff worker's write.
+#[derive(Debug, Clone, Default)]
+pub struct DiffSnapshot {
+    pub hunks: Arc<[Hunk]>,
+    pub base: Rope,
+}
+
+impl DiffSnapshot {
+    /// The line whose virtual lines show a hunk's removed lines: the one
+    /// above the change, or, at the top of the file, its last line (Helix
+    /// has no virtual lines above the first line).
+    pub fn anchor(hunk: &Hunk) -> usize {
+        if hunk.after.start > 0 {
+            hunk.after.start as usize - 1
+        } else {
+            (hunk.after.end as usize).saturating_sub(1)
+        }
+    }
+
+    /// Index of the first hunk anchored at or after `line`.
+    pub fn first_anchored(&self, line: usize) -> usize {
+        self.hunks.partition_point(|h| Self::anchor(h) < line)
+    }
+
+    /// The removed lines of `hunk` that are shown, and how many are not.
+    pub fn removed_lines(&self, hunk: &Hunk) -> (std::ops::Range<usize>, usize) {
+        let len = self.base.len_lines();
+        let start = (hunk.before.start as usize).min(len);
+        let end = (hunk.before.end as usize).clamp(start, len);
+        let shown = (end - start).min(MAX_REMOVED_LINES);
+        (start..start + shown, end - start - shown)
+    }
+
+    /// Rows `hunk`'s removed lines take, soft-wrapped as `wrap` says.
+    pub fn removed_rows(&self, hunk: &Hunk, tab_width: usize, wrap: Option<&RemovedWrap>) -> usize {
+        let (lines, hidden) = self.removed_lines(hunk);
+        let rows: usize = match wrap {
+            None => lines.len(),
+            Some(wrap) => lines
+                .map(|l| {
+                    let line = self.base.line(l);
+                    if display_width(line, tab_width) <= wrap.width {
+                        1
+                    } else {
+                        removed_layout(&display_text(line, tab_width), wrap).len()
+                    }
+                })
+                .sum(),
+        };
+        rows + (hidden > 0) as usize
+    }
+}
+
+/// How removed lines soft-wrap: as Helix wraps the document's own lines,
+/// at words, indented, with its wrap indicator.
+#[derive(Debug, Clone)]
+pub struct RemovedWrap {
+    pub width: usize,
+    pub indicator: String,
+    pub max_indent: usize,
+}
+
+/// One row of a removed line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedRow {
+    /// Columns before the row's text (and its indicator).
+    pub indent: usize,
+    /// A continuation row: the wrap indicator goes first.
+    pub indicator: bool,
+    /// Byte range of the row's text in the line's display text.
+    pub text: Range<usize>,
+}
+
+/// Text never wraps narrower than this; the indent gives way first.
+const MIN_REMOVED_WIDTH: usize = 10;
+
+/// The rows of a removed line's display text (see [`display_text`]).
+pub fn removed_layout(text: &str, wrap: &RemovedWrap) -> Vec<RemovedRow> {
+    if text.width() <= wrap.width {
+        return vec![RemovedRow {
+            indent: 0,
+            indicator: false,
+            text: 0..text.len(),
+        }];
+    }
+    // tabs are spaces already
+    let lead = text.len() - text.trim_start_matches(' ').len();
+    let indicator = wrap.indicator.width();
+    let mut indent = lead.min(wrap.max_indent);
+    if wrap.width < indent + indicator + MIN_REMOVED_WIDTH {
+        indent = 0;
+    }
+    let width = wrap.width.saturating_sub(indent + indicator).max(1);
+    let (rows, _) = self::wrap(&text[lead..], width);
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, range)| RemovedRow {
+            indent,
+            indicator: i > 0,
+            text: range.start + lead..range.end + lead,
+        })
+        .collect()
+}
+
+/// Columns of a line of text as a removed line is drawn: tabs to the next
+/// tab stop, control characters and the line ending dropped.
+pub fn display_width(line: RopeSlice, tab_width: usize) -> usize {
+    let tab = tab_width.max(1);
+    let mut col = 0;
+    for g in line.chunks().flat_map(|c| c.graphemes(true)) {
+        match g {
+            "\t" => col += tab - col % tab,
+            g if g.chars().all(char::is_control) => {}
+            g => col += g.width(),
+        }
+    }
+    col
+}
+
+/// The removed text drawn for a line (see [`display_width`]).
+pub fn display_text(line: RopeSlice, tab_width: usize) -> String {
+    let tab = tab_width.max(1);
+    let mut out = String::with_capacity(line.len_bytes());
+    let mut col = 0;
+    for g in line.chunks().flat_map(|c| c.graphemes(true)) {
+        match g {
+            "\t" => {
+                let n = tab - col % tab;
+                out.extend(std::iter::repeat_n(' ', n));
+                col += n;
+            }
+            g if g.chars().all(char::is_control) => {}
+            g => {
+                out.push_str(g);
+                col += g.width();
+            }
+        }
+    }
+    out
+}
+
+/// How removed lines wrap in a view `width` columns wide, or `None` when
+/// the document does not soft-wrap.
+pub fn removed_wrap(doc: &Document, width: u16) -> Option<RemovedWrap> {
+    let format = doc.text_format(width, None);
+    format.soft_wrap.then(|| RemovedWrap {
+        width: format.viewport_width.max(1) as usize,
+        indicator: format.wrap_indicator.to_string(),
+        max_indent: format.max_indent_retain as usize,
+    })
+}
+
+impl BridgeAnnotations {
+    /// Copy the document's current diff into the snapshot (reusing the
+    /// hunks when they did not change) and return it.
+    pub fn refresh_diff(&self, handle: &DiffHandle) -> DiffSnapshot {
+        let mut cache = self.diff.lock();
+        {
+            let diff = handle.load();
+            let len = diff.len();
+            let same = cache.hunks.len() == len as usize
+                && (0..len).all(|i| cache.hunks[i as usize] == diff.nth_hunk(i));
+            if !same {
+                cache.hunks = (0..len).map(|i| diff.nth_hunk(i)).collect();
+            }
+            cache.base = diff.diff_base().clone();
+        }
+        cache.clone()
+    }
+
+    /// The snapshot the last [`refresh_diff`](Self::refresh_diff) took, for
+    /// drawing (which must not take the diff's lock).
+    pub fn diff_snapshot(&self) -> DiffSnapshot {
+        self.diff.lock().clone()
+    }
+}
+
+/// Reserves the virtual lines that show removed lines above each change.
+struct DiffRows<'a> {
+    doc: &'a Document,
+    text: RopeSlice<'a>,
+    snapshot: DiffSnapshot,
+    hunk: usize,
+    width: u16,
+    tab_width: usize,
+    /// Worked out the first time a removed line needs it.
+    wrap: Option<Option<RemovedWrap>>,
+}
+
+impl<'a> DiffRows<'a> {
+    fn new(doc: &'a Document, snapshot: DiffSnapshot, width: u16) -> Self {
+        DiffRows {
+            doc,
+            text: doc.text().slice(..),
+            snapshot,
+            hunk: 0,
+            width,
+            tab_width: doc.tab_width(),
+            wrap: None,
+        }
+    }
+
+    fn wrap(&mut self) -> Option<&RemovedWrap> {
+        self.wrap
+            .get_or_insert_with(|| removed_wrap(self.doc, self.width))
+            .as_ref()
+    }
+}
+
+impl LineAnnotation for DiffRows<'_> {
+    fn reset_pos(&mut self, char_idx: usize) -> usize {
+        let line = self.text.char_to_line(char_idx.min(self.text.len_chars()));
+        self.hunk = self.snapshot.first_anchored(line);
+        usize::MAX
+    }
+
+    fn insert_virtual_lines(
+        &mut self,
+        line_end_char_idx: usize,
+        _line_end_visual_pos: Position,
+        doc_line: usize,
+    ) -> Position {
+        if doc_line + 1 >= self.text.len_lines()
+            || self.text.line_to_char(doc_line + 1) != line_end_char_idx
+        {
+            return Position::new(0, 0);
+        }
+        let mut rows = 0;
+        while let Some(hunk) = self.snapshot.hunks.get(self.hunk) {
+            let anchor = DiffSnapshot::anchor(hunk);
+            if anchor > doc_line {
+                break;
+            }
+            if anchor == doc_line && !hunk.before.is_empty() {
+                let hunk = hunk.clone();
+                let tab_width = self.tab_width;
+                self.wrap();
+                let wrap = self.wrap.as_ref().and_then(Option::as_ref);
+                rows += self.snapshot.removed_rows(&hunk, tab_width, wrap);
+            }
+            self.hunk += 1;
+        }
+        Position::new(rows, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +754,27 @@ mod tests {
         let (rows, cut) = wrap(&long, 10);
         assert_eq!(rows.len(), MAX_ROWS);
         assert!(cut);
+    }
+
+    #[test]
+    fn removed_lines_wrap_like_the_document() {
+        let wrap = RemovedWrap {
+            width: 24,
+            indicator: "↪ ".into(),
+            max_indent: 40,
+        };
+        let text = "    return nil, fmt.Errorf(path, err)";
+        let rows = removed_layout(text, &wrap);
+        let parts: Vec<_> = rows.iter().map(|r| &text[r.text.clone()]).collect();
+        assert_eq!(parts, ["return nil,", "fmt.Errorf(path,", "err)"]);
+        assert_eq!(rows[0].indent, 4);
+        assert!(!rows[0].indicator && rows[1].indicator);
+        // short enough: one row as it is
+        assert_eq!(removed_layout("    ok", &wrap).len(), 1);
+        assert_eq!(removed_layout("", &wrap).len(), 1);
+        // a deep indent gives way to the text
+        let deep = format!("{}word word word word", " ".repeat(20));
+        assert!(removed_layout(&deep, &wrap).iter().all(|r| r.indent == 0));
     }
 
     #[test]
