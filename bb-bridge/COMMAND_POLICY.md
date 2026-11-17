@@ -71,6 +71,7 @@ upstream adds a command nobody has classified.
 | Command | Aliases | Under `safe` |
 |---|---|---|
 | `append-output` |  | refused: runs a shell command |
+| `bb-annotations` |  | allowed |
 | `bb-ask` |  | refused: sends a message to bb in the user's name |
 | `bb-comment` |  | refused: sends a message to bb in the user's name |
 | `bb-comments-send` |  | refused: sends a message to bb in the user's name |

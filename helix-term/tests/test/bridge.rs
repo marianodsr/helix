@@ -561,7 +561,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
                 "editor/reload",
                 "locations/set",
                 "editor/applyEdits",
-                "annotations/set",
             ] {
                 assert_eq!(c.error(stub, json!({})).await?["code"], -32601, "{stub}");
             }

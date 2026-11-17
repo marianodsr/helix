@@ -205,6 +205,7 @@ impl EditorView {
             inline_diagnostic_config,
             config.end_of_line_diagnostics,
         ));
+        crate::bridge::decorate(doc, view, theme, &mut decorations);
         render_document(
             surface,
             inner,

@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 
 use super::events::{subscribe, unsubscribe};
 use super::methods::{
-    annotations, command, diagnostics, editor, edits, locations, lsp, reload, views,
+    annotations, command, diagnostics, editor, edits, locations, lsp, reload, reveal, views,
 };
 use super::protocol::{ErrorCode, RpcError, RpcResult};
 use super::server::Ctx;
@@ -43,6 +43,9 @@ const METHODS: &[(&str, Handler)] = &[
     ("editor/command", command::command),
     // step 3
     ("annotations/set", annotations::set),
+    // step 2d
+    ("annotations/clear", annotations::clear),
+    ("editor/reveal", reveal::reveal),
 ];
 
 /// `bridge/hello` capabilities: each module says whether it is implemented.
@@ -56,6 +59,7 @@ pub const CAPABILITIES: &[Option<&str>] = &[
     lsp::CAPABILITY,
     edits::CAPABILITY,
     annotations::CAPABILITY,
+    reveal::CAPABILITY,
 ];
 
 pub fn lookup(method: &str) -> Option<Handler> {
