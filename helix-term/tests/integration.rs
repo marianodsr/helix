@@ -28,10 +28,10 @@ mod test {
     mod bridge_files;
     #[cfg(unix)]
     mod bridge_lsp;
-    #[cfg(target_os = "macos")]
-    mod bridge_watch;
     #[cfg(unix)]
     mod bridge_review;
+    #[cfg(target_os = "macos")]
+    mod bridge_watch;
     mod command_line;
     mod commands;
     #[cfg(unix)]

@@ -136,7 +136,7 @@ fn mark_lines(app: &mut Application, variant: Variant) {
             let mut base = String::new();
             for (i, line) in text.lines().enumerate() {
                 let line = line.to_string();
-                if i >= 2 && i < 4000 && (i - 2) % 8 == 0 {
+                if (2..4000).contains(&i) && (i - 2) % 8 == 0 {
                     let kinds = if std::env::var_os("KEYPRESS_ADDED_ONLY").is_some() {
                         1
                     } else {

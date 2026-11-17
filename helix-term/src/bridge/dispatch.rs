@@ -11,8 +11,8 @@ use tokio::sync::oneshot;
 
 use super::events::{subscribe, unsubscribe};
 use super::methods::{
-    annotations, command, diagnostics, editor, edits, locations, lsp, reload, reveal, review, views,
-    watch,
+    annotations, command, diagnostics, editor, edits, locations, lsp, reload, reveal, review,
+    views, watch,
 };
 use super::protocol::{ErrorCode, RpcError, RpcResult};
 use super::server::Ctx;
