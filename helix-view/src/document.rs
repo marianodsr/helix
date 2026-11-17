@@ -234,6 +234,8 @@ pub struct Document {
     // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
     // `ArcSwap` directly.
     syn_loader: Arc<ArcSwap<syntax::Loader>>,
+    /// bb bridge annotations and reveal animation (fork addition).
+    pub bridge_annotations: crate::annotations::bridge::BridgeAnnotations,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -776,6 +778,7 @@ impl Document {
             previous_diagnostic_ids: HashMap::new(),
             pull_diagnostic_controller: TaskController::new(),
             document_link_controller: TaskController::new(),
+            bridge_annotations: Default::default(),
         }
     }
 

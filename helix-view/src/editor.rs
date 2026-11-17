@@ -2661,6 +2661,8 @@ pub struct BridgeConfig {
     pub enable: bool,
     /// What `editor/command` may run. Defaults to `safe`.
     pub commands: BridgeCommandPolicy,
+    /// Animate text an agent just wrote (`editor/reveal`). Defaults to `true`.
+    pub reveal: bool,
 }
 
 impl Default for BridgeConfig {
@@ -2668,6 +2670,7 @@ impl Default for BridgeConfig {
         Self {
             enable: true,
             commands: BridgeCommandPolicy::Safe,
+            reveal: true,
         }
     }
 }

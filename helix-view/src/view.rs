@@ -521,6 +521,7 @@ impl View {
                 config,
             ));
         }
+        crate::annotations::bridge::add_text_annotations(&mut text_annotations, doc, width);
 
         text_annotations
     }
