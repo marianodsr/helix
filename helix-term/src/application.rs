@@ -244,6 +244,8 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        crate::bridge::start(&editor);
+
         let app = Self {
             compositor,
             terminal,
@@ -616,6 +618,7 @@ impl Application {
         );
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
+        crate::bridge::document_saved(&self.editor, doc_save_event.doc_id);
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
@@ -1344,6 +1347,7 @@ impl Application {
         //        want to try to run as much cleanup as we can, regardless of
         //        errors along the way
         let mut errs = Vec::new();
+        crate::bridge::stop();
 
         if let Err(err) = self
             .jobs

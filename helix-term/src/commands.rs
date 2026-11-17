@@ -3587,6 +3587,7 @@ pub fn command_palette(cx: &mut Context) {
             let commands = MappableCommand::STATIC_COMMAND_LIST.iter().cloned().chain(
                 typed::TYPABLE_COMMAND_LIST
                     .iter()
+                    .chain(crate::bridge::typable_commands())
                     .map(|cmd| MappableCommand::Typable {
                         name: cmd.name.to_owned(),
                         args: String::new(),

@@ -52,7 +52,7 @@ helix-loader = { path = "../helix-loader" }
 
 anyhow = "1"
 
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "io-std", "time", "process", "macros", "fs", "parking_lot", "net", "sync"] }
 tui = { path = "../helix-tui", package = "helix-tui", default-features = false, features = ["termina", "crossterm"] }
 termina = { workspace = true, features = ["event-stream"] }
 signal-hook = "0.4"
@@ -85,6 +85,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
 dashmap = "6.2"
+slotmap.workspace = true
 
 parking_lot.workspace = true
 

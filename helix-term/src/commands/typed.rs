@@ -39,7 +39,7 @@ pub struct CommandCompleter {
 }
 
 impl CommandCompleter {
-    const fn none() -> Self {
+    pub(crate) const fn none() -> Self {
         Self {
             positional_args: &[],
             var_args: completers::none,
@@ -4107,6 +4107,7 @@ pub static TYPABLE_COMMAND_MAP: LazyLock<HashMap<&'static str, &'static TypableC
     LazyLock::new(|| {
         TYPABLE_COMMAND_LIST
             .iter()
+            .chain(crate::bridge::typable_commands())
             .flat_map(|cmd| {
                 std::iter::once((cmd.name, cmd))
                     .chain(cmd.aliases.iter().map(move |&alias| (alias, cmd)))
@@ -4253,7 +4254,10 @@ fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Comple
     if complete_command {
         fuzzy_match(
             input,
-            TYPABLE_COMMAND_LIST.iter().map(|command| command.name),
+            TYPABLE_COMMAND_LIST
+                .iter()
+                .chain(crate::bridge::typable_commands())
+                .map(|command| command.name),
             false,
         )
         .into_iter()

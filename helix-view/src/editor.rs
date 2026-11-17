@@ -435,6 +435,8 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
+    /// bb bridge socket (fork addition, see bb-bridge/).
+    pub bridge: BridgeConfig,
 }
 
 /// User-facing configuration for `[editor.workspace-trust]`.
@@ -1216,6 +1218,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             workspace_trust: WorkspaceTrustConfig::default(),
+            bridge: BridgeConfig::default(),
         }
     }
 }
@@ -2648,4 +2651,32 @@ impl CursorCache {
     pub fn reset(&self) {
         self.0.set(None)
     }
+}
+
+/// `[editor.bridge]`: the bb bridge socket (fork addition, see bb-bridge/).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct BridgeConfig {
+    /// Listen on a local socket for bb. Defaults to `true`.
+    pub enable: bool,
+    /// What `editor/command` may run. Defaults to `safe`.
+    pub commands: BridgeCommandPolicy,
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            commands: BridgeCommandPolicy::Safe,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BridgeCommandPolicy {
+    /// Everything except shell commands and discarding unsaved work.
+    Safe,
+    All,
+    None,
 }

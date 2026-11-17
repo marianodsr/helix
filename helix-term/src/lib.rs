@@ -3,6 +3,11 @@ extern crate helix_view;
 
 pub mod application;
 pub mod args;
+#[cfg(unix)]
+pub mod bridge;
+#[cfg(not(unix))]
+#[path = "bridge/unsupported.rs"]
+pub mod bridge;
 pub mod commands;
 pub mod compositor;
 pub mod config;
