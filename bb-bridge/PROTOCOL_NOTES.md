@@ -468,6 +468,21 @@ should know about.
   `data: { "reason": "save failed", "applied": true, "version" }`; if it does
   not finish in time, `timeout` with `data.applied: true`.
 
+## Integration step
+
+- `HELIX_KITTY_KEYBOARD=enabled|disabled` in Helix's environment overrides
+  `[editor] kitty-keyboard-protocol` at start (any other value is ignored
+  with a warning in the log). Helix sets up the terminal once, so it cannot
+  be changed later; `:config-reload` does not undo it. Unix only, like the
+  bridge.
+- Read-only methods (`bridge/hello`, `editor/state`, `editor/text`,
+  `editor/selection`, `events/subscribe`, `events/unsubscribe`,
+  `diagnostics/get`, `lsp/servers`, `lsp/query`, `view/list`, and the
+  snapshot step of `editor/reload`) no longer make Helix draw a frame; every
+  other method still does. Nothing a client sees changes except speed (on
+  a 20k-line Go file, `editor/state` p50 3.65 ms -> 0.04 ms). `lsp/query`
+  that loads a file in the background still repaints (the bufferline).
+
 # Protocol notes (step 2b: diagnostics and language servers)
 
 ## diagnostics/get

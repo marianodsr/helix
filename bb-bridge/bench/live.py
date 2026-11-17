@@ -276,6 +276,8 @@ def _stall_during(c_socket, action):
 
 
 def _verify_2a(sb, hx, check, reg):
+    # The section before pressed keys: since step 2c a focus-moving request
+    # then waits for the user (whenIdle), so these use "always".
     c = Client(reg["socket"])
     caps = c.call("bridge/hello", {"client": "live-2a"})["capabilities"]
     check(all(k in caps for k in ("reload", "locations", "applyEdits")), "2a: capabilities", caps)
@@ -284,7 +286,7 @@ def _verify_2a(sb, hx, check, reg):
     # reload keeps the cursor on its line, `u` undoes it
     sb.write("reload.txt", "one\ntwo\nthree\n")
     rl = sb.path("reload.txt")
-    c.call("editor/open", {"path": rl, "line": 3})
+    c.call("editor/open", {"path": rl, "line": 3, "interrupt": "always"})
     time.sleep(0.02)
     sb.write("reload.txt", "zero\none\ntwo\nthree\n")
     r = c.call("editor/reload", {"paths": [rl]})
@@ -341,7 +343,7 @@ def _verify_2a(sb, hx, check, reg):
         {"path": "gone.txt", "line": 1, "note": "deleted"},
     ]
     m = hx.mark()
-    r = c.call("locations/set", {"list": "tour", "title": "Live tour", "items": items, "goto": 0})
+    r = c.call("locations/set", {"list": "tour", "title": "Live tour", "items": items, "goto": 0, "interrupt": "always"})
     check(r == {"count": 3, "deferred": False}, "2a: locations/set", r)
     check(c.call("editor/state")["focused"]["path"] == lib_rs, "2a: goto jumps")
     check(hx.wait_text("tour 1/3: the sum", m), "2a: goto shows the note")
@@ -398,7 +400,7 @@ def _verify_2a(sb, hx, check, reg):
     big = "\n".join(lines[:20000]) + "\n"
     sb.write("big.go", big)
     big_go = sb.path("big.go")
-    c.call("editor/open", {"path": big_go, "line": 10000})
+    c.call("editor/open", {"path": big_go, "line": 10000, "interrupt": "always"})
     time.sleep(0.3)
 
     def rewrite(text):
@@ -467,7 +469,9 @@ def _verify(args, sb, hx, check):
     b = Client(reg["socket"])
     hello = a.call("bridge/hello", {"client": "live-a", "clientVersion": "1"})
     b.call("bridge/hello", {"client": "live-b", "clientVersion": "1"})
-    check("editor" in hello["capabilities"] and hello["commandPolicy"] == "safe", "hello", hello)
+    check(hello["capabilities"] == ["editor", "reload", "locations", "views", "command", "diagnostics", "lsp",
+                                    "applyEdits", "annotations", "reveal"] and hello["commandPolicy"] == "safe",
+          "hello: every capability, policy safe", hello)
 
     st = a.call("editor/state")
     check(st["focused"]["path"] == main_go and st["focused"]["languageId"] == "go", "state: focused main.go", st["focused"])
@@ -742,7 +746,7 @@ def _verify_2c(args, check):
         c.call("editor/open", {"path": main_go, **now})
         m = hx.mark()
         hx.send(":bb-status" + ENTER, pause=0.2)
-        check(hx.wait_text("offers editor", m) and hx.wait_text("command", m), "2c: :bb-status lists capabilities")
+        check(hx.wait_text("offers all of protocol 1", m), "2c: :bb-status: every capability offered")
 
         # panes and selections
         lst = c.call("view/list")
@@ -862,7 +866,7 @@ def _verify_annotations_reveal(sb, hx, check):
     hx.send(":w" + ENTER, pause=0.3)
     with open(main_go) as f:
         check("LIVE-COMMENT" not in f.read(), "2d: not saved")
-    c.call("editor/open", {"path": main_go, "line": 9})
+    c.call("editor/open", {"path": main_go, "line": 9, "interrupt": "always"})  # keys were just pressed
     sel = c.call("editor/selection")
     with open(main_go) as f:
         ninth = f.read().split("\n")[8]

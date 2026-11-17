@@ -191,16 +191,19 @@ fn bb_status(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> a
         })
         .collect();
     let socket = shared.info.socket.display();
-    let capabilities: Vec<&str> = crate::bridge::dispatch::CAPABILITIES
-        .iter()
-        .flatten()
-        .copied()
-        .collect();
-    let capabilities = capabilities.join(" ");
+    let all = crate::bridge::dispatch::CAPABILITIES;
+    let offered: Vec<&str> = all.iter().flatten().copied().collect();
+    // the list of ten no longer fits a status line beside the clients
+    let capabilities = if offered.len() == all.len() {
+        "all of protocol 1".to_owned()
+    } else {
+        offered.join(" ")
+    };
+    // most useful first: a narrow status line cuts the end
     cx.editor.set_status(match clients.len() {
-        0 => format!("bb bridge: {socket}, no clients; offers {capabilities}"),
+        0 => format!("bb bridge: no clients; offers {capabilities}; {socket}"),
         n => format!(
-            "bb bridge: {socket}, {n} client{}: {}; offers {capabilities}",
+            "bb bridge: {n} client{}: {}; offers {capabilities}; {socket}",
             if n == 1 { "" } else { "s" },
             clients.join(", ")
         ),

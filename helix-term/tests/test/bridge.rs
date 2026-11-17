@@ -331,10 +331,22 @@ async fn lifecycle_registry_and_hello() -> anyhow::Result<()> {
         .await?;
     assert_eq!(hello["protocol"], 1);
     assert_eq!(hello["pid"], std::process::id());
-    assert!(hello["capabilities"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("editor")));
+    // every piece is there, in PROTOCOL.md's order
+    assert_eq!(
+        hello["capabilities"],
+        json!([
+            "editor",
+            "reload",
+            "locations",
+            "views",
+            "command",
+            "diagnostics",
+            "lsp",
+            "applyEdits",
+            "annotations",
+            "reveal"
+        ])
+    );
     assert_eq!(hello["commandPolicy"], "safe");
     assert!(hello["helixVersion"].as_str().unwrap().contains('.'));
     assert!(hello["workspaceRoot"].as_str().is_some());

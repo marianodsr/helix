@@ -404,7 +404,7 @@ def _verify(sb, hx, check):
     sb.write("shapes/square.go", FILES["shapes/square.go"] + "\nfunc (s Square) Perimeter() float64 { return 4 * s.S }\n")
     r = c.call("editor/reload", {"paths": [square_go]})
     check(r["reloaded"] == [square_go], "lsp after reload: the buffer reloaded", r)
-    check(until(lambda: "Perimeter" in symbols(square_go)), "lsp after reload: documentSymbols has the new method",
+    check(until(lambda: any(n.endswith("Perimeter") for n in symbols(square_go))), "lsp after reload: documentSymbols has the new method",
           symbols(square_go))
     h = until(lambda: q(c, "hover", square_go, 7, 17)["markdown"])
     check(h and "Perimeter" in h, "lsp after reload: hover at the new line", h)
@@ -413,7 +413,7 @@ def _verify(sb, hx, check):
         "range": {"start": {"line": 8, "col": 1}, "end": {"line": 8, "col": 1}},
         "newText": "\nfunc (s Square) Diagonal() float64 { return s.S * 1.4142 }\n"}]})
     check(r["modified"] is True, "lsp after applyEdits: buffer modified, not saved", r)
-    check(until(lambda: "Diagonal" in symbols(square_go)), "lsp after applyEdits: documentSymbols has the new method",
+    check(until(lambda: any(n.endswith("Diagonal") for n in symbols(square_go))), "lsp after applyEdits: documentSymbols has the new method",
           symbols(square_go))
     h = until(lambda: q(c, "hover", square_go, 9, 17)["markdown"])
     check(h and "Diagonal" in h, "lsp after applyEdits: hover at the new line", h)
