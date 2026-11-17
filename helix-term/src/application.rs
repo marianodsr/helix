@@ -332,7 +332,9 @@ impl Application {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback))) {
                         self.jobs.add(job);
                     }
-                    self.render().await;
+                    if !crate::bridge::skip_render() {
+                        self.render().await;
+                    }
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
                     let severity = match msg.severity{

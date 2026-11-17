@@ -172,6 +172,12 @@ pub fn focus_gained(editor: &mut Editor) {
     methods::reload::focus_gained(editor);
 }
 
+/// After a dispatched job: was it a read-only bridge request, so there is
+/// nothing new to draw? Called by the main loop.
+pub fn skip_render() -> bool {
+    dispatch::skip_render()
+}
+
 /// A language server published diagnostics for `uri`, open or not.
 pub fn diagnostics_published(uri: &helix_core::Uri) {
     methods::diagnostics::published(uri);
@@ -198,6 +204,23 @@ fn bridge_dir() -> Option<PathBuf> {
 #[cfg(feature = "integration")]
 pub fn set_test_dir(dir: PathBuf) {
     *TEST_DIR.lock() = Some(dir);
+}
+
+#[cfg(feature = "integration")]
+runtime_local! {
+    static VIEWS_DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+}
+
+#[cfg(feature = "integration")]
+fn count_view_drawn() {
+    VIEWS_DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Test support: how many times a pane has been drawn in this runtime, to
+/// tell which requests repaint.
+#[cfg(feature = "integration")]
+pub fn views_drawn() -> u64 {
+    VIEWS_DRAWN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The socket of this runtime's bridge, if it started.

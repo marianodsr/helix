@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::bridge::convert::{path_string, pos_from_char, resolve_path};
-use crate::bridge::dispatch::on_editor;
+use crate::bridge::dispatch::{on_editor, on_editor_read};
 use crate::bridge::events::{self, broadcast, DocMeta, Kind, Msg};
 use crate::bridge::methods::interrupt::Interrupt;
 use crate::bridge::methods::locations::{request_jump, JumpTarget};
@@ -287,7 +287,7 @@ pub fn reload(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
 
 /// The whole reload: snapshot, check and read off the main thread, apply.
 async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult, RpcError> {
-    let (candidates, providers) = on_editor(move |editor, _| {
+    let (candidates, providers) = on_editor_read(move |editor, _| {
         (
             snapshot(editor, paths.as_deref()),
             editor.diff_providers.clone(),

@@ -441,7 +441,7 @@ async fn handle_message(line: &[u8], ctx: &Ctx, permits: &Arc<Semaphore>) {
     ctx.client.in_flight.lock().insert(key.clone(), cancel_tx);
     let ctx = ctx.clone();
     tokio::spawn(async move {
-        let call = handler(ctx.clone(), params);
+        let call = handler.call(ctx.clone(), params);
         let result = tokio::select! {
             result = call => result,
             Ok(()) = cancel_rx => Err(RpcError::new(ErrorCode::Cancelled, "request cancelled")),

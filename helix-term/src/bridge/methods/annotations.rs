@@ -710,6 +710,8 @@ pub fn decorate<'d>(
     theme: &Theme,
     decorations: &mut DecorationManager<'d>,
 ) {
+    #[cfg(feature = "integration")]
+    crate::bridge::count_view_drawn();
     let this = &doc.bridge_annotations;
     if this.is_empty() {
         return;

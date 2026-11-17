@@ -23,6 +23,10 @@ pub fn focus_gained(_editor: &mut Editor) {}
 
 pub fn diagnostics_published(_uri: &helix_core::Uri) {}
 
+pub fn skip_render() -> bool {
+    false
+}
+
 pub fn typable_commands() -> impl Iterator<Item = &'static TypableCommand> {
     std::iter::empty()
 }

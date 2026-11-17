@@ -596,6 +596,8 @@ fn prepare(
                 .map_err(|err| RpcError::not_found(format!("{}: {err}", path.display())))?;
             LOADED.lock().push((id, 1));
             loaded.0 = Some(id);
+            // the bufferline shows it
+            crate::bridge::dispatch::repaint();
             Some(id)
         }
         None => None,

@@ -382,6 +382,60 @@ async fn disabled_by_config() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Requests that only read do not make Helix draw a frame; the ones that
+/// can change the screen still do, every time.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_only_requests_do_not_repaint() -> anyhow::Result<()> {
+    use helix_term::bridge::views_drawn;
+    let file = helpers::temp_file_with_contents("one\ntwo\n")?;
+    let path = file.path().to_string_lossy().into_owned();
+    let mut bridge = Bridge::start(AppBuilder::new().with_file(file.path(), None))?;
+    let (quiet, repainted) = bridge
+        .run(move |_, socket| async move {
+            let mut c = Client::connect(&socket).await?;
+            c.subscribe(&["selection", "documents"]).await?;
+            // let the startup frames and the idle timer pass
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let before = views_drawn();
+            for _ in 0..20 {
+                for method in [
+                    "bridge/hello",
+                    "editor/state",
+                    "editor/selection",
+                    "view/list",
+                    "diagnostics/get",
+                    "lsp/servers",
+                ] {
+                    c.call(method, json!({})).await?;
+                }
+                c.call("editor/text", json!({ "path": path })).await?;
+                c.error("lsp/query", json!({ "kind": "hover", "path": path, "position": { "line": 1, "col": 1 } }))
+                    .await?;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let quiet = views_drawn() - before;
+            let before = views_drawn();
+            for i in 0..20 {
+                c.call("editor/status", json!({ "message": format!("m{i}") }))
+                    .await?;
+                c.call("editor/select", json!({ "ranges": [{ "start": { "line": 1 + i % 2, "col": 1 }, "end": { "line": 1 + i % 2, "col": 1 } }] }))
+                    .await?;
+            }
+            // the job answers before the main loop draws its frame
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok((quiet, views_drawn() - before))
+        })
+        .await?;
+    // a stray frame from a timer is allowed, a frame per request is not
+    assert!(quiet <= 2, "160 read-only requests drew {quiet} frames");
+    assert!(
+        repainted >= 40,
+        "40 changing requests drew {repainted} frames"
+    );
+    bridge.finish().await?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn state_open_text_selection_status() -> anyhow::Result<()> {
     let a = helpers::temp_file_with_contents("aé🦀\nline two\r\nthree\n")?;
