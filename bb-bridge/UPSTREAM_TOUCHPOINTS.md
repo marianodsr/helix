@@ -2,12 +2,13 @@
 
 Every edit to a file that exists upstream (base `49986e667`), with the lines
 (in this branch) and the reason. Everything else is new: `helix-term/src/bridge/`,
-`helix-term/tests/test/bridge.rs` and `bb-bridge/`. Regenerate the hunk list
-with:
+`helix-view/src/annotations/bridge.rs`, `helix-term/tests/test/bridge*.rs`
+and `bb-bridge/`. Regenerate the hunk list with:
 
 ```sh
 git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
-    ':!helix-term/src/bridge' ':!helix-term/tests/test/bridge.rs' | grep -E '^(\+\+\+|@@)'
+    ':!helix-term/src/bridge' ':!helix-term/tests/test/bridge*.rs' \
+    ':!helix-view/src/annotations/bridge.rs' | grep -E '^(\+\+\+|@@)'
 ```
 
 | File | Lines | Change | Why |
@@ -27,6 +28,13 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
 | `helix-term/tests/integration.rs` | 19–20, 23–25 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-view/src/annotations.rs` | 1 | `pub mod bridge;` | Step 2d: annotation and reveal data live next to the inline-diagnostics annotations, in a new file. |
+| `helix-view/src/document.rs` | 237–238, 781 | `pub bridge_annotations` field on `Document` and its default | The text-annotation machinery borrows what it shows from the document (like inlay hints and diagnostics), so the data must live there. |
+| `helix-view/src/view.rs` | 524 | `annotations::bridge::add_text_annotations(..)` at the end of `View::text_annotations` | Reserves the annotations' virtual lines and adds the reveal overlays, so cursor motion, scrolling and mouse positions account for them. Last, so they stack under inline diagnostics. |
+| `helix-view/src/editor.rs` | 2664–2665, 2673 | `reveal` in `BridgeConfig` | `[editor.bridge] reveal`; the struct is the bridge's own (appended in step 1). |
+| `helix-term/src/ui/mod.rs` | 2, 16 | `mod document` and `mod text_decorations` become `pub(crate)` | The bridge draws annotations as a `Decoration` with `TextRenderer`, the same mechanism inline diagnostics use. |
+| `helix-term/src/ui/editor.rs` | 208 | `crate::bridge::decorate(..)` just before `render_document` in `render_view` | Draws gutter signs, line backgrounds, the annotations' rows and the reveal highlight; after every other decoration, so its virtual lines stack in the order `text_annotations` reserved them. Returns at once when the document has none. |
+| `helix-term/tests/integration.rs` | 21–22 | `mod bridge_annotations;` (Unix) | Step 2d integration tests. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.

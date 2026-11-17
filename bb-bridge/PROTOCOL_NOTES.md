@@ -148,3 +148,84 @@ should know about.
   and clients delete them when the socket refuses connections.
 - Not available on Windows (no Unix sockets): the bridge and its `:bb-*`
   commands are left out there.
+
+## Annotations (step 2d)
+
+- **A file that is not open** keeps its annotations in Helix until it is
+  opened, then shows them (positions as they are when it opens). A path that
+  is neither open nor a file on disk is `not_found`. `count` is the number of
+  items stored.
+- `line` and `endLine` are clamped to the document; an `endLine` before
+  `line` counts as `line`. A line past the end goes to the last line.
+- `text`: tabs become four spaces, CRLF becomes LF, other control characters
+  are dropped, trailing whitespace is trimmed. Over 2000 characters is
+  `invalid_params` (`field: "text"`), over 500 items `field: "items"`; an
+  empty `namespace` is `field: "namespace"`; a `sign` that is not exactly one
+  grapheme is `field: "sign"`. An annotation longer than 24 rows is cut, with
+  an ellipsis.
+- **Where it shows**: as virtual lines under `endLine`, after Helix's own
+  inline diagnostics for that line, indented to the code (the leading
+  whitespace of the first non-blank marked line). In a narrow view the
+  indent gives way so the text keeps at least 24 columns. Each view wraps to
+  its own width.
+- **Gutter**: every marked line gets `┃` in the item's colour; `sign`
+  replaces it on the first marked line. It goes in the spacer column right
+  of the diagnostics column (Helix's default layout), else in the
+  diagnostics column, else in any spacer column, else nowhere. One sign per
+  line: the first item in stacking order.
+- **Styles**, from scopes every theme has: `comment` items use `function`'s
+  colour for the bar and gutter sign, `reply` items `string`'s (and start
+  with `↳`), `note` items `keyword`'s with the text in the theme's `comment`
+  style. `severity` replaces the colour with `hint`, `info`, `warning` or
+  `error`. The rows have a background tinted with that colour (13% into
+  `ui.background`); `highlight` tints the marked lines (9%). Themes whose
+  background is not an RGB colour get no tint (and `ui.cursorline.secondary`
+  for `highlight`).
+- **Edits**: annotations follow their lines (Helix maps them through every
+  change, reload included). An annotation whose lines are deleted, line
+  endings included, is removed; emptying a line keeps it. Undo does not
+  bring a removed annotation back; the client sets it again, as a language
+  server does with diagnostics.
+- **Last line without a final newline**: Helix reserves no virtual lines
+  after it, so the text is drawn in the empty area below the end of the
+  file, and is cut off when that line is at the bottom of the view.
+- `annotations/clear` answers `{}`. Without `path` it clears the namespace in
+  every open document and every file waiting to be opened.
+- `:bb-annotations` hides and shows every bridge annotation in the process;
+  it is not saved. Removed lines of a running reveal still show.
+
+## Reveal (step 2d)
+
+- Result: `{ "animated": <ranges with something on screen>, "deferred":
+  false }`. `deferred` is always false until step 2c: `follow` moves the
+  focused view at once (cursor to the start of the first range, centred,
+  opening the file in the focused pane if needed).
+- A file that is not open is `animated: 0` without `follow` (nothing of it is
+  on screen) and is opened with `follow`. A path that is neither open nor
+  on disk is `not_found`. `durationMs` outside 50..3000 is `invalid_params`
+  (`field: "durationMs"`); `interrupt` is validated like `editor/open`'s.
+- "On screen" is, for every view showing the document, its first line to
+  first line plus the view height. Ranges are clipped to that; the rest of
+  the text is simply there. A range whose end is before its start is
+  swapped.
+- Timing: the ranges uncover in order, grapheme by grapheme, evenly over
+  `durationMs`; each uncovered grapheme's background fades over half of
+  `durationMs` (120 to 400 ms). Leading indentation and line endings are
+  never highlighted. The animation ends `durationMs` plus that fade after it
+  started.
+- Covered graphemes are drawn in the theme's background colour, so wrapping
+  and positions never move. With a non-RGB background, single-width
+  graphemes are drawn as a Braille blank (U+2800) instead and wide ones show
+  at once. Whitespace is never covered; soft-wrap indicators and indent
+  guides of covered lines show from the start.
+- `removed`: `line` is the line of the current text the removed text was
+  above; the rows show under the line before it (under line 1 when
+  `line` is 1). Text with newlines is several rows. Rows are not wrapped
+  (cut at the view width), in `diff.minus` with `crossed_out` when the
+  theme's `markup.strikethrough` has it and `dim` otherwise, on a light
+  `diff.minus` tint. They show for the whole animation.
+- Any key press or paste ends every animation at once. An edit to a
+  document ends its animation. A new reveal of the same document replaces
+  the running one.
+- `[editor.bridge] reveal` is read at each request (`:config-reload`
+  applies it). Off: requests succeed with `animated: 0`.
