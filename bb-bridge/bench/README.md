@@ -13,6 +13,8 @@ user's own Helix config, cache or terminals (throwaway `HOME` and XDG dirs).
 | `live_lsp.py` | Step 2b, used by `live.py`: `verify` also builds a small Go module (packages, an interface with two implementations, non-ASCII names) and checks `diagnostics/get`, `lsp/servers`, every `lsp/query` kind, errors, cancel and both events against `~/go/bin/gopls`. `live.py lspbench` measures `lsp/query` overhead above gopls's own time and `diagnostics/get` on ~3000 diagnostics; `live.py lspbig --repo DIR --file F --query '{"position":{"line":L,"col":C}}'` does the same on a large repository. |
 | `live.py redraw --before BIN` | Integration step: a 20k-line Go file with gopls, `editor/state` round trip, `lsp/query` `hover` overhead above gopls and `editor/status` (which must still repaint, checked on screen), for `BIN` against `--hx`. Build `BIN` with the `skip_render()` condition in `application.rs` disabled. |
 | `keypress.rs`, `keypress.sh` | Key-press benchmark in Helix's integration harness, this branch (bridge off / listening / one client subscribed to everything) against the base commit. |
+| `move_latency.py` | No bridge: any `hx` under a pty at given widths, throwaway HOME, sends cursor moves one at a time and times each key to the end of the output it causes (p50/p95/max). Default file `net/http/server.go` from the Go source. `--check MS` exits 1 above MS (bisect-friendly; 125 when hx does not start). The regression check for slow Go highlighting (see "Fixes carried on top of upstream" in `../UPSTREAM_TOUCHPOINTS.md`). |
+| `screen_dump.py` | Renders a file in `hx` with a probe theme (one colour per scope) and prints each row as `[scope:text]` runs; diff two dumps to see what a query change does to the screen. |
 
 ```sh
 cargo build --release
@@ -20,6 +22,8 @@ python3 bb-bridge/bench/live.py verify
 python3 bb-bridge/bench/live.py bench
 python3 bb-bridge/bench/live.py compat --config bb-bridge/config
 bb-bridge/bench/keypress.sh            # release builds into target/bench*
+python3 bb-bridge/bench/move_latency.py --check 10   # Go cursor moves at 53/100/140 columns
+python3 bb-bridge/bench/move_latency.py --file F.ts --cols 120
 ```
 
 `live.py` needs a pty, which some sandboxes refuse ("out of pty devices").

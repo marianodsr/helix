@@ -232,22 +232,16 @@
 (comment) @comment
 
 ; Doc Comments
+; The repeated comments are captured too: a match that started on an earlier
+; line of the same run then holds every capture of a later one, so tree-sitter
+; drops the later match and keeps one per run instead of one per line (which
+; is quadratic and overflows the cursor's match limit on long doc comments).
 (source_file
-  (comment) @comment.block.documentation . (comment)* . [
+  (comment) @comment.block.documentation . (comment)* @comment.block.documentation . [
     (package_clause) ; `package`
     (type_declaration) ; `type`
     (function_declaration) ; `func`
     (method_declaration) ; `func`
     (var_declaration) ; `var`
     (const_declaration) ; `const`
-    ; var (
-    ; 	A = 1
-    ; 	B = 2
-    ; )
-    (var_spec)
-    ; const (
-    ; 	A = 1
-    ; 	B = 2
-    ; )
-    (const_spec)
   ])

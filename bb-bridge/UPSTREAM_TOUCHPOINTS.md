@@ -45,6 +45,75 @@ Not touched: any event definition, any key map, any existing hook or
 handler, `helix-term/src/handlers.rs`. The main loop has the one condition
 above and nothing else.
 
+## Fixes carried on top of upstream
+
+Not bridge code: upstream bugs fixed here because the fork is used daily.
+Each one says how to tell when upstream has it, and then the fix is dropped
+(take upstream's side of the conflict).
+
+### Go doc-comment query: slow cursor moves in Go files with many comments
+
+| File | Lines | Change |
+|---|---|---|
+| `runtime/queries/go/highlights.scm` | 234–247 | Doc comments: the repeated `(comment)*` is captured too (`(comment)* @comment.block.documentation`); the `(var_spec)` and `(const_spec)` branches are removed. |
+
+**Symptom.** On `net/http/server.go` (Go 1.25, 4,102 lines) every cursor
+move took ~27.5 ms from key to output against ~2.3 ms in Homebrew `hx`
+25.07, at any width and any position in the file
+(`bb-bridge/bench/move_latency.py`). Not the bridge, and not Helix code:
+the 25.07.1 binary with this query is just as slow.
+
+**Cause.** Upstream `fdd624e80` "queries/go: Fix doc comment highlights"
+(#15377, 2026-03-14; bisected) added
+`(source_file (comment) @doc . (comment)* . [declarations])`. Every
+`//` line is its own `comment` node, so tree-sitter starts a partial match
+on each line of a comment run and splits each one 9 ways (`*` and the
+alternation) on every following line: a doc comment of about 28 lines already holds
+more than 256 partial matches, the cursor's match limit
+(`TREE_SITTER_MATCH_LIMIT`), and from then on every new capture scans and
+evicts. The pattern is rooted at `source_file`, which always intersects the
+viewport, so the highlighter redoes this for every top-level comment run in
+the whole file on every render (27 ms of the 27.5). The eviction also loses
+highlights: at Helix's limit the query leaves 21,118 doc-comment lines in
+730 of the 7,339 `.go` files under the Go source tree without their doc
+highlight. On `server.go` 173 rendered rows lose it, 63 of them all comment
+colour.
+
+**Fix.** With the repeated comments captured as well, a match that
+started on an earlier line of a run holds every capture of one that
+started later, so tree-sitter drops the later one ("drop shorter state"):
+8 partial matches per run instead of 9 per line. `(var_spec)` and
+`(const_spec)` are never children of `source_file` and only added
+splits. Per 40-line viewport query (tree-sitter 0.26.9, harness against
+the fork's `go.dylib`): 27.1 ms → 1.7 ms, no match-limit overflow.
+Highlighting is the original query's intended result in 7,333 of 7,338
+files (the original run with no match limit; one timed out). The other 5
+each have a single comment run of 250+ lines (`testing/testing.go`'s
+package doc): still too long for the limit, as with the original from ~28
+lines. `cargo xtask highlight-check --dump go` on `server.go` changes 162
+spans, all `comment` → `comment.block.documentation`. A rendered-screen
+diff of all of `server.go` (`screen_dump.py`, 71 screens) changes 173 of
+4,118 rows, all from no or plain comment colour to doc colour.
+
+| `server.go`, key to end of output, p50 | 53 cols | 100 cols | 140 cols |
+|---|---|---|---|
+| Homebrew `hx` 25.07 | ~2.1 ms | ~2.3 | ~2.6 |
+| fork, upstream query | 27.5 | 27.5 | 27.6 |
+| fork, this fix | 2.4–6.4 (median ~4.8) | 2.3–6.0 (~4.8) | 2.2–6.1 (~5.5) |
+
+(8 interleaved runs of 80–100 moves each, load 3–6.) The rest of the
+gap to 25.07 is the pattern's remaining ~1.7 ms per render. Without it
+the same build answers in 0.3 ms, which is the pre-#15377 cost, but the
+pre-#15377 patterns highlighted only the first doc-comment run of the
+file per declaration kind.
+
+**Drop it when** upstream's Go `highlights.scm` no longer has the
+uncaptured `(comment)*` (or tree-sitter's capture cursor stops tracking a
+state per line). Check: `python3 bb-bridge/bench/move_latency.py --check 10`
+with upstream's query passes. Not reported upstream yet. #15619 ("A large
+number of commented lines causes terrible lags") predates #15377 and is a
+related but different case.
+
 ## Against the plugin-system branch
 
 Checked against the tip of `steel-event-system` (mattwparas/helix,
