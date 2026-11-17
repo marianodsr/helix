@@ -139,9 +139,10 @@ should know about.
   `:config-reload` does not start or stop the bridge.
 - `[editor.bridge] commands` accepts `safe`, `all`, `none` and is returned
   as `commandPolicy`; `editor/command` itself is step 2c.
-- If the socket path is too long for the platform (about 104 bytes on
-  macOS) or the directory cannot be created, the bridge logs an error and
-  stays off; Helix runs normally.
+- A socket path over 100 bytes moves to `/tmp/helix-bridge-<uid>/<pid>.sock`
+  as PROTOCOL.md says. If that directory exists but is not a directory
+  owned by the user with mode `0700`, or any directory cannot be created,
+  the bridge logs an error and stays off; Helix runs normally.
 - A process killed without cleanup (SIGKILL, SIGHUP from a closed terminal)
   leaves both files behind; the next Helix with the same pid replaces them,
   and clients delete them when the socket refuses connections.

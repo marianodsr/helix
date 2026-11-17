@@ -14,7 +14,7 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 |---|---|---|---|
 | `helix-term/Cargo.toml` | 55 | tokio features `+ "net", "sync"` | Unix socket listener; `oneshot`/`Notify`. |
 | `helix-term/Cargo.toml` | 88 | `slotmap.workspace = true` | `viewId` as a number (`ViewId` is a slotmap key); already a workspace dependency. |
-| `Cargo.lock` | 1 line | `slotmap` under helix-term | Follows from the line above. |
+| `Cargo.lock` | 1701 | `slotmap` under helix-term | Follows from the line above. |
 | `helix-view/src/editor.rs` | 438–439 | `pub bridge: BridgeConfig` field in `Config` | `[editor.bridge]`; `Config` denies unknown fields, so the section must be declared here. |
 | `helix-view/src/editor.rs` | 1221 | `bridge: BridgeConfig::default()` | Default of the field above. |
 | `helix-view/src/editor.rs` | 2655–2682 (end of file) | `BridgeConfig`, `BridgeCommandPolicy` | The section's type: `enable` (default true), `commands` (`safe`/`all`/`none`). Appended at the end to stay out of upstream's way. |
@@ -26,7 +26,7 @@ git diff 49986e667 -U0 -- helix-term helix-view Cargo.lock \
 | `helix-term/src/commands/typed.rs` | 4110 | `.chain(crate::bridge::typable_commands())` in `TYPABLE_COMMAND_MAP` | Makes `:bb-*` real typed commands: runnable, bindable from `config.toml` (`C = ":bb-comment"`), documented. |
 | `helix-term/src/commands/typed.rs` | 4257–4260 | same chain in `complete_command_line` | `:bb-` completes on the command line. |
 | `helix-term/src/commands.rs` | 3590 | same chain in `command_palette` | `:bb-*` listed in the command palette. |
-| `helix-term/tests/integration.rs` | 19–23 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
+| `helix-term/tests/integration.rs` | 19–20, 23–25 | `mod bridge;` and the key-press benchmark module (Unix) | Bridge integration tests and `bb-bridge/bench/keypress.rs` run in Helix's own harness. |
 
 Not touched: the main loop, any event definition, any key map, any
 existing hook or handler, `helix-term/src/handlers.rs`.
