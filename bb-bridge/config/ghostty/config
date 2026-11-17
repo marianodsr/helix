@@ -1,0 +1,12 @@
+# ghostty +show-config --default --docs
+# ghostty +list-themes
+
+font-family                    = FiraCode Nerd Font Mono
+
+font-size                      = 17
+font-style = Bold
+
+bold-is-bright                 = true
+link-url                       = true
+
+macos-option-as-alt = true

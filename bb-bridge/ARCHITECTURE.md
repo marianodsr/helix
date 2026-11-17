@@ -207,11 +207,14 @@ paths from the machine it was built on.
      tools and Rust, and says what to install if they are missing);
   2. copies `bb-bridge/config/helix` to `~/.config/helix` only if that
      directory does not exist, and otherwise leaves it alone and says so;
+     The same rule applies to `bb-bridge/config/ghostty/config` and
+     `~/.config/ghostty/config`;
   3. installs the bb plugin from the bb-plugins repository when `bb` is
      present;
   4. runs `bb hx doctor`, which checks the binary, the protocol version, the
-     socket directory, and the tools the configuration expects (`gopls`,
-     `goimports`), printing the command for each one that is missing.
+     socket directory, the tools the configuration expects (`gopls`,
+     `goimports`) and the font the Ghostty configuration names, printing the
+     command for each one that is missing.
   It is safe to run twice and never deletes anything.
 - **Release archive.** A script builds the release binary, fetches and builds
   the grammars, and packs `hxb` plus `runtime/` into the archive the
