@@ -211,6 +211,11 @@ pub enum Msg {
     Opened(DocMeta),
     Closed(DocMeta),
     Saved(DocMeta),
+    /// `event/reloaded`, after any pending `event/documentChanged` of `doc`.
+    Reloaded {
+        doc: DocumentId,
+        params: serde_json::Value,
+    },
     Mode(Mode),
     Send(SendSnap),
 }
@@ -556,6 +561,11 @@ impl<S: Sink> Coalescer<S> {
                     document_event(&meta),
                     false,
                 );
+            }
+            Msg::Reloaded { doc, params } => {
+                self.flush_change_of(doc);
+                self.sink
+                    .emit(Kind::Documents, "event/reloaded", params, false);
             }
             Msg::Saved(meta) => {
                 self.flush_change_of(meta.doc);

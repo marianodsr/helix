@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 use super::events::{subscribe, unsubscribe};
 use super::methods::{
-    annotations, command, diagnostics, editor, edits, locations, lsp, reload, reveal, views,
+    annotations, command, diagnostics, editor, edits, locations, lsp, reload, reveal, views, watch,
 };
 use super::protocol::{ErrorCode, RpcError, RpcResult};
 use super::server::Ctx;
@@ -73,6 +73,7 @@ pub const CAPABILITIES: &[Option<&str>] = &[
     edits::CAPABILITY,
     annotations::CAPABILITY,
     reveal::CAPABILITY,
+    watch::CAPABILITY,
 ];
 
 /// A method from the table.

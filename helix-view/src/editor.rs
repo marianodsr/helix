@@ -2666,6 +2666,8 @@ pub struct BridgeConfig {
     /// What `:bb-files` runs when no client shows a tree: `{chooser}` is the
     /// file it writes the chosen paths to, `{path}` the focused file.
     pub file_manager: Vec<String>,
+    /// Reload open buffers when their file changes on disk. Defaults to `true`.
+    pub watch: bool,
 }
 
 impl Default for BridgeConfig {
@@ -2677,6 +2679,7 @@ impl Default for BridgeConfig {
             file_manager: ["yazi", "--chooser-file", "{chooser}", "{path}"]
                 .map(String::from)
                 .to_vec(),
+            watch: true,
         }
     }
 }

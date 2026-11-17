@@ -199,11 +199,16 @@ fn bb_status(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> a
     } else {
         offered.join(" ")
     };
+    let watching = match super::watch::counts() {
+        _ if !super::watch::running() => String::new(),
+        (n, 0) => format!("; watching {n} files"),
+        (n, over) => format!("; watching {n} files ({over} over the descriptor limit)"),
+    };
     // most useful first: a narrow status line cuts the end
     cx.editor.set_status(match clients.len() {
-        0 => format!("bb bridge: no clients; offers {capabilities}; {socket}"),
+        0 => format!("bb bridge: no clients; offers {capabilities}{watching}; {socket}"),
         n => format!(
-            "bb bridge: {n} client{}: {}; offers {capabilities}; {socket}",
+            "bb bridge: {n} client{}: {}; offers {capabilities}{watching}; {socket}",
             if n == 1 { "" } else { "s" },
             clients.join(", ")
         ),

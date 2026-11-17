@@ -88,11 +88,41 @@ enum Origin {
         interrupt: Interrupt,
     },
     FocusGained,
+    /// The watch saw the file change (`methods/watch.rs`).
+    Watch,
 }
 
 impl Origin {
     fn force(self) -> bool {
         matches!(self, Origin::Request { force: true, .. })
+    }
+
+    /// `event/reloaded` `origin`.
+    fn name(self) -> &'static str {
+        match self {
+            Origin::Request { .. } => "request",
+            Origin::FocusGained => "focus",
+            Origin::Watch => "watch",
+        }
+    }
+
+    /// Nobody asked: tell the user on the status line about buffers that
+    /// were kept because of unsaved changes, or whose file was deleted.
+    fn tells_user(self) -> bool {
+        matches!(self, Origin::FocusGained | Origin::Watch)
+    }
+
+    /// Play the reveal animation (it checks `[editor.bridge] reveal`).
+    fn reveals(self) -> bool {
+        matches!(self, Origin::Request { reveal: true, .. } | Origin::Watch)
+    }
+}
+
+/// The watch saw these files change: reload them as `editor/reload` would,
+/// with the reveal as configured.
+pub async fn watched(paths: Vec<PathBuf>) {
+    if let Err(err) = run(Some(paths), Origin::Watch).await {
+        log::warn!("bridge: watch reload failed: {}", err.message);
     }
 }
 
@@ -146,7 +176,6 @@ pub struct Removed {
 
 impl ReloadChanges {
     /// `inserted` as protocol ranges.
-    #[cfg(test)]
     pub fn ranges(&self, text: &Rope) -> Vec<crate::bridge::protocol::Range> {
         let s = text.slice(..);
         self.inserted
@@ -311,10 +340,16 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
     let mut result = ReloadResult::default();
     let mut work = Vec::new();
     let mut external = Vec::new();
+    let mut deleted = Vec::new();
     for (c, found) in candidates.into_iter().zip(found) {
         let path = c.path.to_string_lossy().into_owned();
         match found {
-            Found::Missing => result.missing.push(path),
+            Found::Missing => {
+                if origin == Origin::Watch && first_notice(c.doc, SystemTime::UNIX_EPOCH) {
+                    deleted.push(c.path.clone());
+                }
+                result.missing.push(path)
+            }
             Found::Same => result.unchanged.push(path),
             Found::Error(err) => {
                 log::warn!("bridge: reload {path}: {err}");
@@ -332,8 +367,11 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
     if !external.is_empty() {
         announce_external(&external);
     }
+    if !deleted.is_empty() {
+        on_editor(move |editor, _| warn_deleted(editor, &deleted)).await?;
+    }
     if work.is_empty() {
-        if origin == Origin::FocusGained && !external.is_empty() {
+        if origin.tells_user() && !external.is_empty() {
             on_editor(move |editor, _| warn_external(editor, &external)).await?;
         }
         return Ok(result);
@@ -350,7 +388,8 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
             let outcome = apply(editor, &c, found, origin);
             match &outcome {
                 Applied::Reloaded { changes, text } => {
-                    if let Origin::Request { reveal: true, .. } = origin {
+                    announce_reloaded(editor, c.doc, changes, text, origin);
+                    if origin.reveals() {
                         reveals.push(PendingReveal::new(editor, c.doc, changes));
                     }
                     if follow_to.is_none() {
@@ -407,7 +446,7 @@ async fn run(paths: Option<Vec<PathBuf>>, origin: Origin) -> Result<ReloadResult
         for reveal in reveals {
             reveal.play(editor);
         }
-        if origin == Origin::FocusGained && !(external.is_empty() && late_external.is_empty()) {
+        if origin.tells_user() && !(external.is_empty() && late_external.is_empty()) {
             let all: Vec<_> = external.iter().chain(&late_external).cloned().collect();
             warn_external(editor, &all);
         }
@@ -673,6 +712,46 @@ fn announce_external(paths: &[PathBuf]) {
     }
 }
 
+/// `event/reloaded` for a buffer just reloaded, whatever asked for it.
+fn announce_reloaded(
+    editor: &Editor,
+    doc: DocumentId,
+    changes: &ReloadChanges,
+    text: &Rope,
+    origin: Origin,
+) {
+    if !events::wants_kind(Kind::Documents) {
+        return;
+    }
+    let Some(document) = editor.document(doc) else {
+        return;
+    };
+    let params = serde_json::json!({
+        "docId": crate::bridge::convert::doc_num(doc),
+        "path": path_string(document.path()),
+        "version": document.version(),
+        "ranges": changes.ranges(text),
+        "removed": changes.removed.len(),
+        "origin": origin.name(),
+    });
+    events::send(Msg::Reloaded { doc, params });
+}
+
+fn warn_deleted(editor: &mut Editor, paths: &[PathBuf]) {
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            helix_stdx::path::get_relative_path(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    editor.set_warning(format!(
+        "{} deleted on disk; the buffer is kept (:w writes it again)",
+        names.join(", ")
+    ));
+}
+
 fn warn_external(editor: &mut Editor, paths: &[PathBuf]) {
     let names: Vec<String> = paths
         .iter()
@@ -704,6 +783,8 @@ pub fn focus_gained(editor: &mut Editor) {
     if crate::bridge::shared().is_none() || editor.documents().all(|d| d.path().is_none()) {
         return;
     }
+    // a buffer whose path changed or whose directory came back
+    super::watch::resync(editor);
     tokio::spawn(async move {
         if let Err(err) = run(None, Origin::FocusGained).await {
             log::warn!("bridge: focus check failed: {}", err.message);

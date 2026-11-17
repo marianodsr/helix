@@ -53,7 +53,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn track(&self, handle: AbortHandle) {
+    pub(crate) fn track(&self, handle: AbortHandle) {
         self.tasks.lock().push(handle);
     }
 
@@ -85,6 +85,7 @@ impl Shared {
             return;
         }
         events::set_wants(0);
+        methods::watch::stop();
         for task in self.tasks.lock().drain(..) {
             task.abort();
         }
@@ -130,6 +131,7 @@ pub fn start(editor: &Editor) {
     }
     events::install(editor, &shared);
     methods::command::capture_policy(editor);
+    methods::watch::start(editor, &shared);
     let task = tokio::spawn(server::listen(dir, shared.clone()));
     shared.track(task.abort_handle());
     log::info!("bridge: started in {:?}", begin.elapsed());
@@ -192,6 +194,8 @@ pub fn stop() {
 /// A document was written to disk (there is no editor event for this).
 pub fn document_saved(editor: &Editor, doc: DocumentId) {
     events::document_saved(editor, doc);
+    // `:write <path>` gives the buffer a new file
+    methods::watch::resync_after_save();
 }
 
 /// The terminal regained focus: reload buffers changed on disk meanwhile.
@@ -273,6 +277,13 @@ pub async fn overlays() -> Vec<String> {
     })
     .await
     .unwrap_or_default()
+}
+
+/// Test support: files the watch has a descriptor on, and files over the
+/// descriptor budget.
+#[cfg(feature = "integration")]
+pub fn watch_counts() -> (usize, usize) {
+    methods::watch::counts()
 }
 
 /// Test support: the status line, read on the main loop.

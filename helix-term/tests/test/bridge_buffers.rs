@@ -24,6 +24,15 @@ fn canonical(path: &Path) -> String {
         .into_owned()
 }
 
+/// These tests drive `editor/reload`, the focus check and saves over a
+/// changed file themselves; the watch (tested in bridge_watch.rs) would
+/// reload the buffers first.
+fn without_watch() -> AppBuilder {
+    let mut config = helpers::test_config();
+    config.editor.bridge.watch = false;
+    AppBuilder::new().with_config(config)
+}
+
 /// Write `text` so the file's mtime is certain to differ from before.
 fn rewrite(path: &str, text: &str) -> anyhow::Result<()> {
     std::thread::sleep(Duration::from_millis(5));
@@ -117,9 +126,8 @@ async fn reload_reports_and_keeps_selections_in_every_view() -> anyhow::Result<(
         canonical(d.path()),
     );
     // cursor on line 3 ("l3"), 0-based position
-    let mut bridge = Bridge::start(
-        AppBuilder::new().with_file(a.path(), Some(helix_core::Position::new(2, 0))),
-    )?;
+    let mut bridge =
+        Bridge::start(without_watch().with_file(a.path(), Some(helix_core::Position::new(2, 0))))?;
     bridge
         .run(move |keys, socket| async move {
             let mut c = Client::connect(&socket).await?;
@@ -215,7 +223,7 @@ async fn reload_follow_moves_to_the_first_change() -> anyhow::Result<()> {
     let a = helpers::temp_file_with_contents("one\n")?;
     let b = helpers::temp_file_with_contents("x1\nx2\nx3\nx4\nx5\n")?;
     let (ap, bp) = (canonical(a.path()), canonical(b.path()));
-    let mut bridge = Bridge::start(AppBuilder::new().with_file(a.path(), None))?;
+    let mut bridge = Bridge::start(without_watch().with_file(a.path(), None))?;
     let (ap2, bp2) = (ap.clone(), bp.clone());
     bridge
         .run(move |_, socket| async move {
@@ -325,7 +333,7 @@ async fn focus_gained_reloads_clean_buffers_and_warns_about_modified() -> anyhow
     let a = helpers::temp_file_with_contents("clean\n")?;
     let b = helpers::temp_file_with_contents("dirty\n")?;
     let (ap, bp) = (canonical(a.path()), canonical(b.path()));
-    let mut bridge = Bridge::start(AppBuilder::new().with_file(a.path(), None))?;
+    let mut bridge = Bridge::start(without_watch().with_file(a.path(), None))?;
     let (ap2, bp2) = (ap.clone(), bp.clone());
     bridge
         .run(move |keys, socket| async move {
@@ -512,7 +520,7 @@ async fn apply_edits_one_undo_step_versions_and_errors() -> anyhow::Result<()> {
     let b = helpers::temp_file_with_contents("background\n")?;
     let (ap, bp) = (canonical(a.path()), canonical(b.path()));
     let missing = format!("{ap}.missing");
-    let mut bridge = Bridge::start(AppBuilder::new().with_file(a.path(), None))?;
+    let mut bridge = Bridge::start(without_watch().with_file(a.path(), None))?;
     bridge
         .run(move |keys, socket| async move {
             let mut c = Client::connect(&socket).await?;

@@ -72,7 +72,13 @@ pub fn hello(cx: Ctx, params: Value) -> BoxFuture<'static, RpcResult> {
                 .to_string_lossy()
                 .into_owned(),
             workspace_root: info.workspace_root.to_string_lossy().into_owned(),
-            capabilities: CAPABILITIES.iter().flatten().copied().collect(),
+            capabilities: CAPABILITIES
+                .iter()
+                .flatten()
+                .copied()
+                // listed only while Helix is watching (`[editor.bridge] watch`)
+                .filter(|c| *c != "watch" || super::watch::running())
+                .collect(),
         };
         let mut value = serde_json::to_value(result).unwrap_or_default();
         value["commandPolicy"] = policy.into();

@@ -14,6 +14,7 @@ pub mod reload;
 pub mod reveal;
 pub mod send;
 pub mod views;
+pub mod watch;
 
 use crate::commands::typed::TypableCommand;
 
@@ -35,5 +36,6 @@ pub fn register_hooks() {
     lsp::register_hooks();
     interrupt::register_hooks();
     annotations::register_hooks();
+    watch::register_hooks();
     reveal::register_hooks();
 }
