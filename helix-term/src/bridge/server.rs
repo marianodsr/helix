@@ -117,6 +117,7 @@ fn write_registry(shared: &Shared) -> std::io::Result<()> {
         "BB_ENVIRONMENT_ID",
         "BB_PROJECT_ID",
         "BB_TERMINAL_ID",
+        "BB_TERMINAL_SESSION_ID",
     ]
     .into_iter()
     .filter_map(|name| Some((name.to_owned(), Value::String(std::env::var(name).ok()?))))
