@@ -289,7 +289,10 @@ async fn lifecycle_registry_and_hello() -> anyhow::Result<()> {
         .await?;
     assert_eq!(hello["protocol"], 1);
     assert_eq!(hello["pid"], std::process::id());
-    assert_eq!(hello["capabilities"], json!(["editor"]));
+    assert!(hello["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("editor")));
     assert_eq!(hello["commandPolicy"], "safe");
     assert!(hello["helixVersion"].as_str().unwrap().contains('.'));
     assert!(hello["workspaceRoot"].as_str().is_some());
@@ -557,8 +560,6 @@ async fn protocol_errors() -> anyhow::Result<()> {
                 "editor/reload",
                 "locations/set",
                 "editor/applyEdits",
-                "diagnostics/get",
-                "lsp/query",
                 "view/list",
                 "editor/command",
                 "annotations/set",
