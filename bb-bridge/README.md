@@ -119,19 +119,22 @@ All are typed commands (`:bb-…`) and complete on the command line.
 ### Key bindings
 
 None are set for you. [config/keys-bb.example.toml](config/keys-bb.example.toml)
-suggests a set under `space t`, which Helix leaves free:
+suggests a set under `space u`, which Helix leaves free (the bb plugin's
+hints name these keys):
 
 ```toml
-[keys.normal.space.t]
-s = ":bb-send"
-c = ":bb-comment"
-C = ":bb-comments-send"
-i = ":bb-status"
-n = ":bb-next"
-p = ":bb-prev"
+[keys.normal.space.u]
+c = "@:bb-comment<ret>"
+s = "@:bb-send<ret>"
+C = "@:bb-emit review.send<ret>"
+f = "@:bb-emit review.next-file<ret>"
+v = "@:bb-emit review.viewed<ret>"
+u = "@:bb-emit rail.toggle<ret>"
 ```
 
-Copy the lines you want into `~/.config/helix/config.toml`.
+Copy the lines you want into `~/.config/helix/config.toml`. Write them as
+macros (`"@:command<ret>"`): a stock `hx` rejects a whole config that names
+a typed command it does not have, and a macro is only looked up when pressed.
 
 ## Settings
 
@@ -152,10 +155,10 @@ in both modes:
 
 ```toml
 [keys.normal.space]
-e = ":bb-files"
+e = "@:bb-files<ret>"
 
 [keys.select.space]
-e = ":bb-files"
+e = "@:bb-files<ret>"
 ```
 
 | Environment | |

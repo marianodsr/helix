@@ -71,7 +71,7 @@ The installer prints the exact commands for this machine. Typically:
   `PATH`).
 - **Key bindings** for the bridge commands are not installed. Suggested ones
   are in `~/.local/lib/hxb/<version>-<commit>/config/keys-bb.example.toml`
-  (under `space t`). Changing `~/.config/helix/config.toml` is the owner's
+  (under `space u`). Changing `~/.config/helix/config.toml` is the owner's
   call: offer the lines, do not add them unasked. Helix rejects a config
   that names a command it does not have, so only offer lines for commands
   this build has (`:bb-status` lists what it offers).

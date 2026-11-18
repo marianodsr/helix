@@ -7,13 +7,14 @@
 # up when the key is pressed: stock `hx` keeps loading the config and the key
 # reports an unknown command there.
 #
-# They sit under `space t` ("thread"), which Helix leaves free. `space e`
-# replaces Helix's own file explorer with the yazi tree.
+# They sit under `space u`, which Helix leaves free; the bb plugin's hints
+# name these keys. `space e` replaces Helix's own file explorer with the
+# yazi tree.
 
 [keys.normal.space]
 e = "@:bb-files<ret>"                       # the file tree (yazi)
 
-[keys.normal.space.t]
+[keys.normal.space.u]
 c = "@:bb-comment<ret>"                     # comment on the selection (bb's comment box, or a prompt outside bb)
 s = "@:bb-send<ret>"                        # selection (or current line) to the thread's composer
 C = "@:bb-emit review.send<ret>"            # send the comments that are waiting
@@ -21,9 +22,10 @@ f = "@:bb-emit review.next-file<ret>"       # next changed file (starts a review
 F = "@:bb-emit review.prev-file<ret>"       # previous changed file
 v = "@:bb-emit review.viewed<ret>"          # mark this file viewed and go to the next
 d = "@:bb-diff<ret>"                        # inline diff on or off
-r = "@:bb-emit rail.changes<ret>"           # the Changes tab
-m = "@:bb-emit rail.comments<ret>"          # the Comments tab
-t = "@:bb-emit chat.focus<ret>"             # the thread's chat
+u = "@:bb-emit rail.toggle<ret>"            # the rail, on the tab it was on
+r = "@:bb-emit rail.changes<ret>"           # the rail on Changes
+m = "@:bb-emit rail.comments<ret>"          # the rail on Comments
+t = "@:bb-emit chat.focus<ret>"             # the thread's chat (Escape there comes back)
 n = "@:bb-next<ret>"                        # next place in the active list (agent changes, tour, review)
 p = "@:bb-prev<ret>"
 l = "@:bb-locations<ret>"                   # browse the active list
@@ -34,6 +36,6 @@ i = "@:bb-status<ret>"                      # socket, clients and what this buil
 [keys.select.space]
 e = "@:bb-files<ret>"
 
-[keys.select.space.t]
+[keys.select.space.u]
 c = "@:bb-comment<ret>"
 s = "@:bb-send<ret>"
